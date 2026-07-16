@@ -98,8 +98,39 @@
     position: fixed; top: 30%; left: 50%; transform: translate(-50%,-50%); z-index: 30;
     font-size: 16px; font-weight: bold; color: #fff; background: rgba(15,20,40,.9);
     padding: 12px 22px; border-radius: 14px; border: 1px solid #3a4368;
-    display: none; animation: pop .2s;
+    display: none; animation: pop .2s; white-space: nowrap;
   }
+
+  /* ---- ファイトUI ---- */
+  #fight-ui {
+    position: fixed; bottom: 70px; left: 50%; transform: translateX(-50%);
+    width: min(340px, 84vw); z-index: 9; display: none;
+  }
+  body.fighting #fight-ui { display: block; }
+  body.fighting #hint { display: none; }
+  .fbar { margin-bottom: 8px; }
+  .fbar .flabel { font-size: 10px; color: #9aa3c8; margin-bottom: 3px; letter-spacing: 1px; }
+  .ftrack { height: 14px; background: rgba(10,14,28,.8); border: 1px solid #2a3358; border-radius: 999px; overflow: hidden; }
+  .ffill { height: 100%; width: 0%; border-radius: 999px; transition: width .1s linear; }
+  #reel-fill { background: linear-gradient(90deg, #3dc8ff, #5a6aff); }
+  #tension-fill { background: linear-gradient(90deg, #3ddb84, #ffd75e 60%, #ff4a4a); }
+  #fight-hint {
+    text-align: center; font-size: 12px; color: #cdd6f4; margin-top: 6px;
+    background: rgba(10,14,28,.72); border-radius: 999px; padding: 6px 10px;
+  }
+  body.run #fight-hint { color: #ff8a8a; font-weight: bold; }
+
+  /* 前アタリ: 小さくピクッ */
+  #float.nibble { animation: nib .3s 2; }
+  @keyframes nib { 50% { transform: translateY(7px); } }
+
+  /* 振りキャストチップ */
+  #motion-btn {
+    font-size: 11px; padding: 6px 10px; border-radius: 999px; cursor: pointer;
+    background: rgba(30,38,68,.8); color: #9aa3c8; border: 1px solid #2a3358;
+  }
+  #motion-btn.on { color: #7fff9d; border-color: #2a6a3e; }
+  #motion-btn.hidden { display: none; }
 
   /* ---- 結果 / 図鑑 モーダル ---- */
   .modal {
@@ -160,6 +191,7 @@
   <div id="topbar">
     <span class="title">🎣 どこでも釣ろうよ</span>
     <div class="place-chips" id="places"></div>
+    <button id="motion-btn" class="hidden">📳 振りキャスト</button>
     <button id="zukan-btn">図鑑 <span id="zukan-count"></span></button>
   </div>
 
@@ -182,6 +214,18 @@
   <div id="bite-mark">❗</div>
   <div id="hint">画面をタップしてキャスト</div>
   <div id="toast"></div>
+
+  <div id="fight-ui">
+    <div class="fbar">
+      <div class="flabel">つりあげ</div>
+      <div class="ftrack"><div class="ffill" id="reel-fill"></div></div>
+    </div>
+    <div class="fbar">
+      <div class="flabel">糸のテンション</div>
+      <div class="ftrack"><div class="ffill" id="tension-fill"></div></div>
+    </div>
+    <div id="fight-hint">長押しで巻け！</div>
+  </div>
 
   <div class="modal" id="result-modal">
     <div id="result-card"></div>
