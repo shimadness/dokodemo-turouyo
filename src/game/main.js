@@ -1,7 +1,12 @@
 // 釣り本体
 // 流れ: idle → casting → waiting → (前アタリ×0〜3) → bite(合わせ猶予)
-//        → fight(長押しで巻く vs 魚の走り) → 釣果 / 逃走(シルエット提示)
+//        → fight(巻き/いなし/ポンピング) → 釣果 / 逃走(シルエット提示)
 // 場所チップが抽選テーブルを変える。将来ここを GPS 判定に差し替える。
+//
+// ファイトの操作系（センサー無しでも成立、センサーで上手くなる）:
+//   長押し           = 巻く
+//   走られ中に逆へ傾け = いなし（巻き続けられる）。無センサー時は走りと逆側の画面を押さえる
+//   スマホを立てる     = 竿を立てる（巻き半速・テンションが抜ける = ポンピング）
 import { renderCreature } from '../render.js';
 import { WEEK, CREATURES } from '../weeks/2026-w29-deepsea-neon.js';
 
@@ -12,23 +17,30 @@ const randi = (a, b) => Math.floor(rand(a, b + 1));
 // ================= 調整卓 =================
 // 手触りのフィードバックはまずここを触る
 const TUNE = {
-  castMs: 580,          // キャスト飛行時間
+  castMs: 580,            // キャスト飛行時間
   biteDelay: [1400, 4200], // 着水→本アタリまで
-  nibbleCount: [0, 3],  // 前アタリ回数（この範囲でランダム）
-  nibbleGap: [650, 1500], // 前アタリ同士の間隔
-  biteWindow: 1100,     // 合わせ猶予(ms)
+  nibbleCount: [0, 3],    // 前アタリ回数
+  nibbleGap: [650, 1500],
+  biteWindow: 1100,       // 合わせ猶予(ms)
   // --- ファイト ---
-  reelRate: 17,         // 長押し中の巻き速度(%/s)。魚のちからで減衰
-  reelRateRun: 4,       // 走られ中に巻いた時の速度
-  tensionHold: 10,      // 通常時、巻いてる間のテンション上昇(/s)
-  tensionRun: 58,       // 走られ中に巻き続けた時の上昇(/s)
-  tensionDecay: 46,     // 離した時の下降(/s)
-  progressDecay: 2,     // 離した時の巻き戻され(/s)
-  progressDecayRun: 8,  // 走られ中に離した時の巻き戻され(/s)
-  runEvery: [1300, 3200], // 走りの間隔（ちからが低いと更に間延び）
-  runFor: [650, 1400],  // 走りの持続
-  swingThreshold: 13,   // ジャイロ: この加速度(m/s²)超えで振りと判定
-  swingMax: 34,         // この加速度で最大飛距離
+  reelRate: 17,           // 長押し中の巻き速度(%/s)。魚のちからで減衰
+  reelRateRun: 4,         // 走られ中（いなし無し）に巻いた時
+  reelRateCounter: 8,     // いなし成功中に巻いた時
+  tensionHold: 10,        // 通常巻き中のテンション上昇(/s)
+  tensionRun: 58,         // 走られ中に巻き続けた時(/s)
+  tensionCounter: 15,     // いなし成功中に巻いた時(/s)
+  tensionDecay: 46,       // 離した時の下降(/s)
+  progressDecay: 2,
+  progressDecayRun: 8,
+  runEvery: [1300, 3200],
+  runFor: [650, 1400],
+  // --- センサー ---
+  swingThreshold: 13,     // 振りキャスト判定(m/s²)
+  swingMax: 34,           // 最大飛距離になる加速度
+  counterTilt: 12,        // いなし判定の左右傾き(度)
+  pumpPitch: 15,          // 竿立て判定のピッチ(度)
+  pumpReelMul: 0.5,       // 竿立て中の巻き速度倍率
+  pumpShed: 22,           // 竿立て中のテンション追加下降(/s)
 };
 // ==========================================
 
@@ -98,18 +110,19 @@ async function initCamera() {
   }
 }
 
-// ---------- ジャイロ（振りキャスト） ----------
+// ---------- センサー（振りキャスト + 傾き） ----------
 let motionOn = false;
 let swingPeak = 0;
 let swingTimer = null;
+const ori = { beta: null, gamma: null };   // 現在の傾き
+const oriBase = { beta: 0, gamma: 0 };     // ファイト開始時の基準
 
 function onMotion(e) {
   if (state !== 'idle') return;
   const a = e.acceleration;
   if (!a) return;
   const mag = Math.hypot(a.x || 0, a.y || 0, a.z || 0);
-  if (mag < TUNE.swingThreshold) return;
-  // 振り始め検知 → 250ms ピークを集めてからキャスト（振り切りの強さを拾う）
+  if (mag < TUNE.swingThreshold && !swingTimer) return;
   swingPeak = Math.max(swingPeak, mag);
   if (!swingTimer) {
     swingTimer = setTimeout(() => {
@@ -117,46 +130,56 @@ function onMotion(e) {
       swingPeak = 0; swingTimer = null;
       castBySwing(strength);
     }, 250);
-  } else {
-    swingPeak = Math.max(swingPeak, mag);
   }
 }
 
+function onOrientation(e) {
+  ori.beta = e.beta;
+  ori.gamma = e.gamma;
+}
+
 function castBySwing(strength) {
-  // 強く振るほど遠く（画面上方）へ。左右は少し散る
   const y = innerHeight * (0.78 - 0.48 * strength);
   const x = innerWidth * 0.5 + rand(-90, 90);
-  toast(strength > 0.85 ? 'フルキャスト！' : null);
+  if (strength > 0.85) toast('フルキャスト！');
   cast(x, Math.max(y, innerHeight * 0.26));
 }
 
-function attachMotion() {
+function attachSensors() {
   addEventListener('devicemotion', onMotion);
+  addEventListener('deviceorientation', onOrientation);
   motionOn = true;
   const b = $('motion-btn');
   b.classList.remove('hidden');
   b.classList.add('on');
-  b.textContent = '📳 振りキャストON';
+  b.textContent = '📳 センサーON';
   setHint('スマホを振ってキャスト！（タップでもOK）');
 }
 
 function initMotion() {
-  if (typeof DeviceMotionEvent === 'undefined') return; // センサーなし
+  if (typeof DeviceMotionEvent === 'undefined') return; // センサーなし環境
   if (typeof DeviceMotionEvent.requestPermission === 'function') {
-    // iOS: ユーザー操作の中で許可を取る必要がある → ボタンを出す
+    // iOS: 許可リクエストは click / touchend ハンドラ内でしか呼べない
+    // （pointerdown はユーザー操作と認められず例外になる）
     const b = $('motion-btn');
     b.classList.remove('hidden');
-    b.addEventListener('pointerdown', async (e) => {
+    b.addEventListener('click', async (e) => {
       e.stopPropagation();
       if (motionOn) return;
       try {
         const res = await DeviceMotionEvent.requestPermission();
-        if (res === 'granted') attachMotion();
-        else toast('センサーが許可されなかった');
-      } catch { toast('センサーを起動できなかった'); }
+        if (res !== 'granted') { toast('センサーが許可されなかった'); return; }
+        // 傾きの許可は別APIのことがあるので念のため（同じプロンプトに束ねられる場合が多い）
+        if (typeof DeviceOrientationEvent?.requestPermission === 'function') {
+          try { await DeviceOrientationEvent.requestPermission(); } catch { /* motion側の許可で足りる端末が多い */ }
+        }
+        attachSensors();
+      } catch (err) {
+        toast(`センサー起動失敗: ${String(err?.message || err).slice(0, 50)}`);
+      }
     });
   } else {
-    attachMotion(); // Android等: 許可不要
+    attachSensors(); // Android等: 許可不要
   }
 }
 
@@ -169,6 +192,7 @@ const clearTimers = () => { timers.forEach(clearTimeout); timers = []; };
 let floatPos = { x: 0, y: 0 };
 let landPos = { x: 0, y: 0 };
 let currentCatch = null;
+let lastPointerX = null; // 無センサー時のいなし判定に使う
 
 const rodTip = () => ({ x: innerWidth - 190, y: innerHeight - 235 });
 
@@ -200,9 +224,13 @@ function toast(msg) {
   const t = $('toast');
   t.textContent = msg;
   t.style.display = 'block';
-  setTimeout(() => { t.style.display = 'none'; }, 1300);
+  setTimeout(() => { t.style.display = 'none'; }, 1500);
 }
 function setHint(msg) { $('hint').textContent = msg; }
+function setFightHint(msg) {
+  const el = $('fight-hint');
+  if (el.textContent !== msg) el.textContent = msg;
+}
 
 // ---------- キャスト〜アタリ ----------
 function cast(x, y) {
@@ -232,7 +260,6 @@ function cast(x, y) {
 }
 
 function scheduleBite() {
-  // この一投で釣れる（かもしれない）魚を先に決める → 前アタリの派手さも魚で変わる
   currentCatch = draw();
   const nibbles = randi(TUNE.nibbleCount[0], TUNE.nibbleCount[1]);
   let delay = rand(TUNE.biteDelay[0], TUNE.biteDelay[1]);
@@ -247,7 +274,7 @@ function nibble() {
   if (state !== 'waiting') return;
   const f = $('float');
   f.classList.remove('nibble');
-  void f.offsetWidth; // アニメ再始動
+  void f.offsetWidth;
   f.classList.add('nibble');
   ripple(floatPos.x, floatPos.y);
   navigator.vibrate?.(40);
@@ -283,7 +310,10 @@ function miss(msg) {
 }
 
 // ---------- ファイト ----------
-const fight = { progress: 0, tension: 0, holding: false, running: false, raf: 0, last: 0 };
+const fight = {
+  progress: 0, tension: 0, holding: false,
+  running: false, runDir: 0, raf: 0, iv: 0, last: 0,
+};
 
 function startFight() {
   clearTimers();
@@ -293,15 +323,18 @@ function startFight() {
   state = 'fight';
   document.body.classList.add('fighting');
   navigator.vibrate?.([60, 40, 60]);
-  fight.progress = 12; // 合わせた瞬間の初速（気持ちよさ）
+  fight.progress = 12;
   fight.tension = 20;
   fight.holding = false;
   fight.running = false;
+  fight.runDir = 0;
   fight.last = performance.now();
-  $('fight-hint').textContent = '長押しで巻け！';
+  // ファイト開始時の持ち方を「ニュートラル」とする
+  if (ori.beta != null) { oriBase.beta = ori.beta; oriBase.gamma = ori.gamma; }
+  setFightHint('長押しで巻け！');
   scheduleRun();
   fight.raf = requestAnimationFrame(fightLoop);
-  // rAFが止まる環境（非表示タブ・省電力WebView）でもファイトが進む保険
+  // rAFが止まる環境（非表示タブ・省電力WebView）でも進む保険
   fight.iv = setInterval(() => {
     if (state === 'fight' && performance.now() - fight.last > 200) fightStep(performance.now());
   }, 150);
@@ -309,21 +342,41 @@ function startFight() {
 
 function scheduleRun() {
   if (state !== 'fight') return;
-  // ちからが低い魚ほど走りの間隔が延びる（★1はほぼ棒立ち）
   const laziness = 1 + Math.max(0, (60 - currentCatch.stats.power)) / 55;
   later(() => {
     if (state !== 'fight') return;
     fight.running = true;
+    fight.runDir = Math.random() < 0.5 ? -1 : 1;
     document.body.classList.add('run', 'bite'); // bite流用で竿を震わせる
-    $('fight-hint').textContent = '走ってる！ 離せ！';
     navigator.vibrate?.([80, 50, 80]);
     later(() => {
       fight.running = false;
+      fight.runDir = 0;
       document.body.classList.remove('run', 'bite');
-      $('fight-hint').textContent = '長押しで巻け！';
+      setFightHint('長押しで巻け！');
       scheduleRun();
     }, rand(TUNE.runFor[0], TUNE.runFor[1]));
   }, rand(TUNE.runEvery[0], TUNE.runEvery[1]) * laziness);
+}
+
+// いなし判定: 傾き(逆方向へcounterTilt度) or 走りと逆側の画面を押さえている
+function isCountering() {
+  if (fight.runDir === 0) return false;
+  if (motionOn && ori.gamma != null) {
+    const dGamma = ori.gamma - oriBase.gamma;
+    if (dGamma * fight.runDir <= -TUNE.counterTilt) return true;
+  }
+  if (fight.holding && lastPointerX != null) {
+    if (fight.runDir > 0 && lastPointerX < innerWidth * 0.4) return true;
+    if (fight.runDir < 0 && lastPointerX > innerWidth * 0.6) return true;
+  }
+  return false;
+}
+
+// 竿立て判定: スマホを起こす（ピッチ+）
+function isPumping() {
+  if (!motionOn || ori.beta == null) return false;
+  return (ori.beta - oriBase.beta) >= TUNE.pumpPitch;
 }
 
 // 物理1ステップ。'snap' | 'land' | null を返す
@@ -333,22 +386,39 @@ function fightStep(now) {
   if (dt <= 0) return null;
   fight.last = now;
   const power = currentCatch.stats.power;
-  const reel = TUNE.reelRate * (1 - power / 170); // ちから99 → 巻き速度約4割
+  const countered = fight.running && isCountering();
+  const pumping = isPumping();
+  let reel = TUNE.reelRate * (1 - power / 170);
+  if (pumping) reel *= TUNE.pumpReelMul;
 
   if (fight.holding) {
-    fight.progress += (fight.running ? TUNE.reelRateRun : reel) * dt;
-    fight.tension += (fight.running ? TUNE.tensionRun : TUNE.tensionHold) * dt;
+    if (fight.running) {
+      fight.progress += (countered ? TUNE.reelRateCounter : TUNE.reelRateRun) * dt;
+      fight.tension += (countered ? TUNE.tensionCounter : TUNE.tensionRun) * dt;
+    } else {
+      fight.progress += reel * dt;
+      fight.tension += TUNE.tensionHold * dt;
+    }
   } else {
     fight.progress -= (fight.running ? TUNE.progressDecayRun : TUNE.progressDecay) * dt;
     fight.tension -= TUNE.tensionDecay * dt;
   }
+  if (pumping) fight.tension -= TUNE.pumpShed * dt;
   fight.progress = Math.max(0, fight.progress);
   fight.tension = Math.max(0, fight.tension);
 
-  // ウキ: 巻き上げに応じて竿元へ寄る。走られ中は暴れる
+  // ヒント（状況で切り替え）
+  if (fight.running) {
+    if (countered) setFightHint('いなしてる！巻け巻け！');
+    else setFightHint(fight.runDir > 0 ? '➡ 右に走ってる！左へいなせ！' : '⬅ 左に走ってる！右へいなせ！');
+  } else if (fight.tension > 70 && motionOn) {
+    setFightHint('スマホを起こして竿を立てろ！');
+  }
+
+  // ウキ: 巻き上げで竿元へ寄る。走られ中は走り方向へ暴れる
   const t = rodTip();
   const k = Math.min(1, fight.progress / 100);
-  const jx = fight.running ? rand(-9, 9) : rand(-2, 2);
+  const jx = fight.running ? rand(2, 10) * fight.runDir : rand(-2, 2);
   const jy = fight.running ? rand(-7, 7) : rand(-1.5, 1.5);
   moveFloat(landPos.x + (t.x - landPos.x) * k * 0.8 + jx, landPos.y + (t.y - landPos.y) * k * 0.5 + jy);
   drawLine(floatPos.x, floatPos.y, true);
@@ -378,7 +448,6 @@ function snap() {
   stopFight();
   navigator.vibrate?.(300);
   showEscape(escaped);
-  // 状態リセット（モーダルの裏で）
   clearTimers();
   document.body.classList.remove('bite');
   $('float').style.opacity = '0';
@@ -425,7 +494,7 @@ function showEscape(c) {
       <div class="stars">${stars}</div>
       <h2>糸が切れた…！</h2>
       <p class="flavor">${c.stats.weight}kg くらいの影が、ゆっくり消えていった。</p>
-      <div class="statline">テンションが上がりきる前に、指を離してかわそう</div>
+      <div class="statline">走られたら逆へいなすか、指を離してかわそう</div>
     </div>`;
   $('result-modal').classList.add('show');
 }
@@ -461,11 +530,11 @@ $('zukan-close').addEventListener('pointerdown', (e) => { e.stopPropagation(); $
 // ---------- 入力 ----------
 document.body.addEventListener('pointerdown', (e) => {
   if (e.target.closest('.modal, #topbar')) return;
+  lastPointerX = e.clientX;
   if (state === 'idle') {
     const y = Math.min(Math.max(e.clientY, innerHeight * 0.26), innerHeight * 0.9);
     cast(e.clientX, y);
   } else if (state === 'waiting') {
-    // 前アタリ中に焦って合わせると逃げられる（我慢が技術）
     if ($('float').classList.contains('nibble')) miss('早アワセ！まだ食い込んでない…');
     else miss('回収した');
   } else if (state === 'bite') {
@@ -473,6 +542,9 @@ document.body.addEventListener('pointerdown', (e) => {
   } else if (state === 'fight') {
     fight.holding = true;
   }
+});
+document.body.addEventListener('pointermove', (e) => {
+  if (state === 'fight' && fight.holding) lastPointerX = e.clientX; // 指を滑らせていなす
 });
 const release = () => { fight.holding = false; };
 document.body.addEventListener('pointerup', release);
@@ -484,12 +556,20 @@ updateZukanCount();
 initCamera();
 initMotion();
 
-// ?debug=1 でテスト用フック（非表示タブでは rAF が発火しないため、状態機械を直接進められるように）
+// ?debug=1 でテスト用フック（非表示タブでは rAF/タイマーが動かないため状態機械を直接進める）
 if (new URLSearchParams(location.search).has('debug')) {
   window.__game = {
     st: () => state,
-    fight,
+    fight, ori, oriBase,
     fightStep,
     catchName: () => currentCatch?.name ?? null,
+    forceMotion: () => { motionOn = true; },
+    setPointerX: (x) => { lastPointerX = x; },
+    forceFight: (name) => { // タイマーを介さず直接ファイトに入る
+      currentCatch = CREATURES.find((c) => c.name === name) ?? CREATURES[0];
+      landPos = { x: innerWidth / 2, y: innerHeight / 2 };
+      state = 'bite';
+      startFight();
+    },
   };
 }
