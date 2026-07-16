@@ -9,6 +9,7 @@
 //   スマホを立てる     = 竿を立てる（巻き半速・テンションが抜ける = ポンピング）
 import { renderCreature } from '../render.js';
 import { WEEK, CREATURES } from '../weeks/2026-w29-deepsea-neon.js';
+import { sfx } from './sfx.js';
 
 const $ = (id) => document.getElementById(id);
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -24,10 +25,12 @@ const TUNE = {
   biteWindow: 1100,       // 合わせ猶予(ms)
   // --- ファイト ---
   reelRate: 17,           // 長押し中の巻き速度(%/s)。魚のちからで減衰
-  reelRateRun: 4,         // 走られ中（いなし無し）に巻いた時
+  reelRateRun: 0,         // 走られ中（いなし無し）は巻いても寄らない ← いなしの価値
   reelRateCounter: 8,     // いなし成功中に巻いた時
-  tensionHold: 10,        // 通常巻き中のテンション上昇(/s)
-  tensionRun: 58,         // 走られ中に巻き続けた時(/s)
+  tensionHoldBase: 6,     // 巻き中のテンション上昇の基礎(/s)
+  tensionHoldPer: 0.12,   // + ちから×これ。★1は無心で釣れ、★3から休ませ必須になる
+  tensionRunBase: 20,     // 走られ中に巻き続けた時(/s)の基礎
+  tensionRunPer: 0.5,     // + ちから×これ。小物の走りは可愛く、大物は凶暴
   tensionCounter: 15,     // いなし成功中に巻いた時(/s)
   tensionDecay: 46,       // 離した時の下降(/s)
   progressDecay: 2,
@@ -253,6 +256,7 @@ function cast(x, y) {
     ripple(x, y);
     drawLine(x, y);
     f.classList.add('landed');
+    sfx.splash();
     state = 'waiting';
     setHint('……');
     scheduleBite();
@@ -277,6 +281,7 @@ function nibble() {
   void f.offsetWidth;
   f.classList.add('nibble');
   ripple(floatPos.x, floatPos.y);
+  sfx.nibble();
   navigator.vibrate?.(40);
 }
 
@@ -290,6 +295,7 @@ function bite() {
   const b = $('bite-mark');
   b.style.left = `${floatPos.x}px`; b.style.top = `${floatPos.y}px`;
   b.style.display = 'block';
+  sfx.bite();
   navigator.vibrate?.(200);
   setHint('今だ！タップ！');
   later(() => miss('逃げられた…'), TUNE.biteWindow);
@@ -342,7 +348,7 @@ function startFight() {
 
 function scheduleRun() {
   if (state !== 'fight') return;
-  const laziness = 1 + Math.max(0, (60 - currentCatch.stats.power)) / 55;
+  const laziness = 1 + Math.max(0, (60 - currentCatch.stats.power)) / 40; // 弱い魚ほど走らない(★1はほぼ棒立ち)
   later(() => {
     if (state !== 'fight') return;
     fight.running = true;
@@ -388,16 +394,18 @@ function fightStep(now) {
   const power = currentCatch.stats.power;
   const countered = fight.running && isCountering();
   const pumping = isPumping();
+  const tensionHold = TUNE.tensionHoldBase + TUNE.tensionHoldPer * power;
+  const tensionRun = TUNE.tensionRunBase + TUNE.tensionRunPer * power;
   let reel = TUNE.reelRate * (1 - power / 170);
   if (pumping) reel *= TUNE.pumpReelMul;
 
   if (fight.holding) {
     if (fight.running) {
       fight.progress += (countered ? TUNE.reelRateCounter : TUNE.reelRateRun) * dt;
-      fight.tension += (countered ? TUNE.tensionCounter : TUNE.tensionRun) * dt;
+      fight.tension += (countered ? TUNE.tensionCounter : tensionRun) * dt;
     } else {
       fight.progress += reel * dt;
-      fight.tension += TUNE.tensionHold * dt;
+      fight.tension += tensionHold * dt;
     }
   } else {
     fight.progress -= (fight.running ? TUNE.progressDecayRun : TUNE.progressDecay) * dt;
@@ -411,9 +419,31 @@ function fightStep(now) {
   if (fight.running) {
     if (countered) setFightHint('いなしてる！巻け巻け！');
     else setFightHint(fight.runDir > 0 ? '➡ 右に走ってる！左へいなせ！' : '⬅ 左に走ってる！右へいなせ！');
-  } else if (fight.tension > 70 && motionOn) {
-    setFightHint('スマホを起こして竿を立てろ！');
+  } else if (pumping) {
+    setFightHint('テンションが抜けていく…！');
+  } else if (fight.tension > 70) {
+    setFightHint(motionOn ? 'スマホを起こして竿を立てろ！' : '一旦離して休ませろ！');
   }
+
+  // 手触りパルス（音+振動を状態ごとのリズムで刻む）。iOSは音が主役(vibrate非対応)
+  if (countered && !fight.wasCountered) { sfx.counterOk(); navigator.vibrate?.([20, 30, 20]); } // いなし成立の瞬間
+  fight.wasCountered = countered;
+  const pulseEvery = fight.running ? (countered ? 150 : 90) : (pumping ? 200 : (fight.holding ? 95 : 0));
+  if (pulseEvery && now - (fight.pulseAt || 0) > pulseEvery) {
+    fight.pulseAt = now;
+    if (fight.running && !countered) { sfx.dragHard(); navigator.vibrate?.(40); } // ドラグが鳴く
+    else if (fight.running) sfx.dragSoft();
+    else if (pumping) { sfx.shed(fight.tension); navigator.vibrate?.(12); }
+    else sfx.reelTick();
+  }
+  // 危険域(テンション78+): 独立した警告リズム + 画面が赤く滲む
+  const danger = fight.tension > 78;
+  if (danger && now - (fight.warnAt || 0) > 350) {
+    fight.warnAt = now;
+    sfx.warn(); navigator.vibrate?.(50);
+  }
+  document.body.classList.toggle('danger', danger);
+  document.body.classList.toggle('pumping', pumping);
 
   // ウキ: 巻き上げで竿元へ寄る。走られ中は走り方向へ暴れる
   const t = rodTip();
@@ -440,12 +470,13 @@ function fightLoop(now) {
 function stopFight() {
   cancelAnimationFrame(fight.raf);
   clearInterval(fight.iv);
-  document.body.classList.remove('fighting', 'run');
+  document.body.classList.remove('fighting', 'run', 'danger', 'pumping');
 }
 
 function snap() {
   const escaped = currentCatch;
   stopFight();
+  sfx.snap();
   navigator.vibrate?.(300);
   showEscape(escaped);
   clearTimers();
@@ -458,6 +489,7 @@ function snap() {
 function land() {
   stopFight();
   ripple(floatPos.x, floatPos.y);
+  sfx.land();
   navigator.vibrate?.([60, 40, 120]);
   const isNew = record(currentCatch);
   showResult(currentCatch, isNew);
@@ -529,6 +561,7 @@ $('zukan-close').addEventListener('pointerdown', (e) => { e.stopPropagation(); $
 
 // ---------- 入力 ----------
 document.body.addEventListener('pointerdown', (e) => {
+  sfx.init(); // AudioContextはユーザー操作内でしか起動できない
   if (e.target.closest('.modal, #topbar')) return;
   lastPointerX = e.clientX;
   if (state === 'idle') {
@@ -549,6 +582,12 @@ document.body.addEventListener('pointermove', (e) => {
 const release = () => { fight.holding = false; };
 document.body.addEventListener('pointerup', release);
 document.body.addEventListener('pointercancel', release);
+
+// ---------- ミュート ----------
+const muteBtn = $('mute-btn');
+const muteLabel = () => { muteBtn.textContent = sfx.isMuted() ? '🔇' : '🔊'; };
+muteBtn.addEventListener('click', (e) => { e.stopPropagation(); sfx.toggleMute(); muteLabel(); });
+muteLabel();
 
 // ---------- 起動 ----------
 renderPlaces();

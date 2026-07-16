@@ -131,6 +131,23 @@
   }
   #motion-btn.on { color: #7fff9d; border-color: #2a6a3e; }
   #motion-btn.hidden { display: none; }
+  #mute-btn {
+    font-size: 13px; padding: 5px 9px; border-radius: 999px; cursor: pointer;
+    background: rgba(30,38,68,.8); border: 1px solid #2a3358;
+  }
+
+  /* 危険域: 画面のふちが赤く滲む + テンションバーが明滅 */
+  #vignette {
+    position: fixed; inset: 0; z-index: 3; pointer-events: none; opacity: 0;
+    transition: opacity .25s;
+    background: radial-gradient(ellipse at center, transparent 52%, rgba(255,40,40,.38));
+  }
+  body.danger #vignette { opacity: 1; animation: dangerpulse .7s ease-in-out infinite; }
+  @keyframes dangerpulse { 50% { opacity: .55; } }
+  body.danger .ftrack { border-color: #a03040; }
+
+  /* ポンピング中: テンションバーが青系に変わる=抜けている合図 */
+  body.pumping #tension-fill { background: linear-gradient(90deg, #3ddb84, #3dc8ff); }
 
   /* ---- 結果 / 図鑑 モーダル ---- */
   .modal {
@@ -188,9 +205,11 @@
   <div id="fallback-bg"></div>
   <div id="cam-note"></div>
 
+  <div id="vignette"></div>
   <div id="topbar">
     <span class="title">🎣 どこでも釣ろうよ</span>
     <div class="place-chips" id="places"></div>
+    <button id="mute-btn">🔊</button>
     <button id="motion-btn" class="hidden">📳 振りキャスト</button>
     <button id="zukan-btn">図鑑 <span id="zukan-count"></span></button>
   </div>
