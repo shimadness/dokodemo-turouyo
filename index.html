@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>どこでも釣ろうよ — 生き物レンダラー試作</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: radial-gradient(ellipse at top, #17203a 0%, #0c1020 60%);
+    min-height: 100vh;
+    color: #e8ecf8;
+    font-family: 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', sans-serif;
+    padding: 28px 20px 64px;
+  }
+  header { text-align: center; margin-bottom: 30px; }
+  h1 { font-size: 26px; letter-spacing: 2px; }
+  h1 .sub { display: block; font-size: 12px; color: #8a93b8; font-weight: normal; margin-top: 6px; letter-spacing: 1px; }
+  section > h3 {
+    max-width: 1080px; margin: 34px auto 14px; font-size: 14px; color: #aab3d8;
+    letter-spacing: 1.5px; border-left: 3px solid #4a5aff; padding-left: 10px;
+  }
+  .grid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+    gap: 16px; max-width: 1080px; margin: 0 auto;
+  }
+  .week-head { max-width: 1080px; margin: 30px auto 16px; }
+  .week-title { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .week-id {
+    font-size: 11px; letter-spacing: 1.5px; color: #7de3ff;
+    border: 1px solid #2c5a72; border-radius: 5px; padding: 3px 8px;
+  }
+  .week-theme {
+    font-size: 24px; font-weight: bold;
+    background: linear-gradient(90deg, #7de3ff, #ff6fd8);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .week-count { font-size: 12px; color: #6f7ba6; }
+  .week-note { font-size: 12.5px; color: #8a93b8; margin-top: 7px; }
+  .card {
+    background: linear-gradient(180deg, #1b2340 0%, #141a30 100%);
+    border-radius: 16px; padding: 14px 16px 16px; text-align: center;
+    border: 2px solid #2a3358;
+    transition: transform .15s;
+  }
+  .card:hover { transform: translateY(-3px); }
+  .card.r3 { border-color: #3d6bd8; }
+  .card.r4 { border-color: #9a4ae0; box-shadow: 0 0 14px rgba(154, 74, 224, .25); }
+  .card.r5 { border-color: #e8b04a; box-shadow: 0 0 18px rgba(232, 176, 74, .35); }
+  .stage {
+    background: radial-gradient(circle at 50% 42%, #232d52 0%, #10152a 78%);
+    border-radius: 12px; margin-bottom: 10px;
+  }
+  .stage svg { display: block; width: 100%; height: auto; }
+  .stars { color: #ffd75e; font-size: 13px; letter-spacing: 2px; margin-bottom: 4px; }
+  h2 { font-size: 17px; margin-bottom: 6px; }
+  .flavor { font-size: 11.5px; color: #9aa3c8; line-height: 1.55; min-height: 3.1em; margin-bottom: 8px; }
+  .chips { margin-bottom: 8px; }
+  .chip {
+    display: inline-block; font-size: 10.5px; background: #26305a; color: #b8c2ee;
+    border-radius: 999px; padding: 3px 10px; margin: 0 3px;
+  }
+  .stats { display: flex; justify-content: center; gap: 10px; font-size: 11px; color: #7d87b0; }
+  #regen {
+    display: block; margin: 0 auto 18px; padding: 12px 34px; font-size: 15px;
+    background: linear-gradient(180deg, #5a6aff, #3a48d8); color: #fff; border: none;
+    border-radius: 999px; cursor: pointer; font-weight: bold; letter-spacing: 1px;
+    box-shadow: 0 4px 14px rgba(74, 90, 255, .4);
+  }
+  #regen:active { transform: scale(.97); }
+</style>
+</head>
+<body>
+  <header>
+    <h1>🎣 どこでも釣ろうよ
+      <span class="sub">生き物レンダラー試作 — spec JSON → SVG合成</span>
+    </h1>
+    <a href="fishing.html" style="display:inline-block;margin-top:12px;padding:10px 26px;background:linear-gradient(180deg,#5a6aff,#3a48d8);color:#fff;border-radius:999px;font-size:14px;font-weight:bold;text-decoration:none;">▶ 釣りに行く</a>
+  </header>
+
+  <section>
+    <div class="week-head">
+      <div class="week-title">
+        <span class="week-id" id="week-id"></span>
+        <span class="week-theme" id="week-theme"></span>
+        <span class="week-count" id="week-count"></span>
+      </div>
+      <p class="week-note" id="week-note"></p>
+    </div>
+    <div class="grid" id="week"></div>
+  </section>
+
+  <section>
+    <h3>手書きサンプル 5体（比較用の基準）</h3>
+    <div class="grid" id="samples"></div>
+  </section>
+
+  <section>
+    <h3>ランダム生成（将来ここが LLM 週次生成になる）</h3>
+    <button id="regen">🎲 8体ガチャる</button>
+    <div class="grid" id="randoms"></div>
+  </section>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
