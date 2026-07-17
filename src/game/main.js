@@ -69,6 +69,12 @@ const TUNE = {
   swingThreshold: 13,     // 振りキャスト判定(m/s²)
   swingMax: 34,           // 最大飛距離になる加速度
   counterTilt: 12,        // いなし判定の左右傾き(度)
+  // 画面の竿がスマホの傾きに追従する量。スマホ自体が竿になる感覚を作る。
+  // 副産物として「いなし」「竿立て」が効いているのが目で見て分かるようになる
+  // 竿は画面の左上を向いているので、穂先を上げる＝時計回り(正)。
+  // 右に傾ける／スマホを立てる のどちらも穂先が起きる向き＝正
+  aimGainGamma: 0.75,     // 左右の傾き→竿の回転
+  aimGainBeta: 0.5,       // 前後(立てる)→竿の回転
   pumpPitch: 15,          // 竿立て判定のピッチ(度)
   // ポンピング（実釣どおり）: 竿を立てて魚を浮かせ、倒しながら緩んだ分を巻き取る。
   // 立てている間はリールを巻かなくても寄る代わりに、糸がどんどん緩む。
@@ -153,7 +159,7 @@ let motionOn = false;
 let swingPeak = 0;
 let swingTimer = null;
 const ori = { beta: null, gamma: null };   // 現在の傾き
-const oriBase = { beta: 0, gamma: 0 };     // ファイト開始時の基準
+const oriBase = { beta: 0, gamma: 0, set: false }; // 持ち方の基準（最初の姿勢／各局面の開始時）
 
 function onMotion(e) {
   if (state !== 'idle') return;
@@ -174,6 +180,10 @@ function onMotion(e) {
 function onOrientation(e) {
   ori.beta = e.beta;
   ori.gamma = e.gamma;
+  // 最初に持った姿勢を基準にする（以後の傾きはここからの差分）
+  if (!oriBase.set && e.beta != null) {
+    oriBase.beta = e.beta; oriBase.gamma = e.gamma ?? 0; oriBase.set = true;
+  }
 }
 
 function castBySwing(strength) {
@@ -816,6 +826,13 @@ let rodLast = performance.now();
 function rodLoop(now) {
   const dt = Math.min(0.05, (now - rodLast) / 1000);
   rodLast = now;
+  // スマホの傾きに竿を追従させる（スマホ＝竿）
+  if (motionOn && ori.beta != null) {
+    const dG = (ori.gamma ?? 0) - oriBase.gamma;
+    const dB = ori.beta - oriBase.beta;
+    // 右に傾ける→穂先が右へ / スマホを立てる→穂先が起き上がる（どちらも時計回り）
+    rod.setAim(dG * TUNE.aimGainGamma + dB * TUNE.aimGainBeta);
+  }
   rod.update(dt);
   // 待機/ファイト中は道糸が穂先から出る（穂先が動くので追従が要る）
   if (state === 'waiting' || state === 'bite') drawLine(floatPos.x, floatPos.y);

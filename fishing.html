@@ -258,7 +258,9 @@
 
   <svg id="line-svg"></svg>
   <svg id="rod" viewBox="0 0 380 330">
-    <!-- 竿は JS が毎フレーム path を書き換えてしならせる -->
+    <!-- rod-aim: スマホの傾きに追従してグリップを軸に回る（= スマホが竿になる）
+         中身は JS が毎フレーム path を書き換えてしならせる -->
+    <g id="rod-aim">
     <path id="rod-shadow" d="" fill="rgba(0,0,0,.5)"/>
     <path id="rod-blank" d="" fill="#5c3a20" stroke="#2f1d0f" stroke-width="1" stroke-linejoin="round"/>
     <path id="rod-hilite" d="" stroke="#c8925a" stroke-width="1.6" fill="none" stroke-linecap="round" opacity="0.9"/>
@@ -271,6 +273,7 @@
       <circle cx="306" cy="282" r="11.5" fill="#26304e" stroke="#5a6488" stroke-width="1.5"/>
       <circle id="reel-knob" cx="306" cy="282" r="4.5" fill="#8a94b8"/>
       <rect x="300" y="257" width="12" height="10" rx="3" fill="#3a4368"/>
+    </g>
     </g>
   </svg>
   <div id="float">
