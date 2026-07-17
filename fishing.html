@@ -237,6 +237,23 @@
     background: rgba(30,38,68,.8); border: 1px solid #2a3358; white-space: nowrap; flex: none;
   }
 
+  /* ---- 魚影（水面下を泳ぐ。この近くに投げないと食わない） ---- */
+  #shadows { position: fixed; inset: 0; z-index: 2; pointer-events: none; }
+  .fishshadow {
+    position: fixed; left: 0; top: 0; border-radius: 50%;
+    background: radial-gradient(ellipse at center,
+      rgba(4,10,22,.66), rgba(4,10,22,.34) 52%, transparent 72%);
+    will-change: transform; transition: opacity .4s;
+  }
+  .fishshadow.dart { opacity: 0; transition: opacity .28s, transform .28s ease-in; }
+
+  /* 図鑑: 未発見は完全に「?」。逃した個体だけシルエットが載る */
+  .zcell .qmark {
+    aspect-ratio: 1; display: flex; align-items: center; justify-content: center;
+    font-size: 38px; font-weight: bold; color: #39456e;
+  }
+  .zcell.seen .zname { color: #8a93b8; }
+
   /* ---- 結果 / 図鑑 モーダル ---- */
   .modal {
     position: fixed; inset: 0; z-index: 40; display: none;
@@ -293,6 +310,7 @@
   <div id="fallback-bg"></div>
   <div id="cam-note"></div>
 
+  <div id="shadows"></div>
   <div id="vignette"></div>
   <div id="topbar">
     <span class="title">🎣 どこでも釣ろうよ</span>

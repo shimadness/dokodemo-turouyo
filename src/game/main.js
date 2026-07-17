@@ -67,6 +67,11 @@ const TUNE = {
   runEvery: [1300, 3200],
   runFor: [650, 1400],
   // --- センサー ---
+  // --- 魚影（キャストの狙い） ---
+  castRadius: 120,        // 着水点からこの距離(px)に魚影がいないと食わない
+  shadowCount: 3,         // 画面に泳ぐ魚影の数
+  shadowSpeed: [8, 22],   // 魚影の泳ぐ速さ(px/s)
+  approachSpeed: 55,      // 誘いに乗った魚影がウキへ寄る速さ(px/s、興味に比例)
   swingThreshold: 13,     // 振りキャスト判定(m/s²)
   swingMax: 34,           // 最大飛距離になる加速度
   counterTilt: 12,        // いなし判定の左右傾き(度)
@@ -104,7 +109,7 @@ function renderPlaces() {
 }
 $('places').addEventListener('pointerdown', (e) => {
   const k = e.target.dataset?.k;
-  if (k) { place = k; renderPlaces(); e.stopPropagation(); }
+  if (k) { place = k; renderPlaces(); respawnAllShadows(); e.stopPropagation(); }
 });
 
 // ---------- 抽選 ----------
@@ -128,15 +133,22 @@ const zukan = JSON.parse(localStorage.getItem(ZKEY) || '{}');
 const zsave = () => localStorage.setItem(ZKEY, JSON.stringify(zukan));
 
 function record(c) {
-  const first = !zukan[c.name];
+  const first = !(zukan[c.name]?.count > 0);
   zukan[c.name] = zukan[c.name] || { count: 0, week: WEEK.id, firstAt: Date.now() };
   zukan[c.name].count += 1;
   zsave();
   updateZukanCount();
   return first;
 }
+// バラした魚は「逃した」として記録（図鑑にシルエットだけ載る）
+function recordSeen(c) {
+  if (zukan[c.name]?.count > 0) return; // 釣った実績が優先
+  zukan[c.name] = zukan[c.name] || { count: 0, week: WEEK.id };
+  zukan[c.name].seen = true;
+  zsave();
+}
 function updateZukanCount() {
-  const caught = CREATURES.filter((c) => zukan[c.name]).length;
+  const caught = CREATURES.filter((c) => zukan[c.name]?.count > 0).length;
   $('zukan-count').textContent = `${caught}/${CREATURES.length}`;
 }
 
@@ -207,9 +219,16 @@ function updateSensorBtn() {
 
 function castBySwing(strength) {
   const y = innerHeight * (0.78 - 0.48 * strength);
-  const x = innerWidth * 0.5 + rand(-90, 90);
+  // 振りは飛距離(y)の操作。左右は飛距離帯に一番近い影を狙うが、散りは残す
+  let x = innerWidth * 0.5 + rand(-90, 90);
+  let best = null, bd = Infinity;
+  for (const sh of shadows) {
+    const dy = Math.abs(sh.y - y);
+    if (dy < bd) { bd = dy; best = sh; }
+  }
+  if (best) x = best.x + rand(-70, 70);
   if (strength > 0.85) toast('フルキャスト！');
-  cast(x, Math.max(y, innerHeight * 0.26));
+  cast(Math.min(Math.max(x, innerWidth * 0.06), innerWidth * 0.94), Math.max(y, innerHeight * 0.26));
 }
 
 function attachSensors() {
@@ -330,8 +349,21 @@ function cast(x, y) {
     sfx.splash();
     coach.note('cast');
     state = 'waiting';
-    currentCatch = draw(); // この一投の魚を先に決める（誘いの手応えも魚で変わる）
-    startLure();
+    // 着水点の近くに魚影がいるか？（チュートリアル中は一番近い影を引き寄せて必ず成立させる）
+    let { sh, d } = nearestShadow(x, y);
+    if (coach.forgive() && sh && d > TUNE.castRadius) {
+      sh.x = x + rand(-60, 60); sh.y = Math.min(innerHeight * 0.86, y + 50);
+      d = 0;
+    }
+    if (sh && d <= TUNE.castRadius) {
+      activeShadow = sh;
+      currentCatch = sh.c; // 影の中身がこの一投の魚（影の大きさ=重さのヒント）
+      startLure();
+    } else {
+      activeShadow = null;
+      currentCatch = null;
+      setHint('近くに魚影がない… タップで回収');
+    }
   }, TUNE.castMs);
 }
 
@@ -386,7 +418,7 @@ function bite() {
   navigator.vibrate?.(200);
   setHint(orientationLive ? '今だ！ 押さえてスマホを立てろ！' : '今だ！タップ！');
   // チュートリアル中は合わせを待ってあげる（猶予を長く）
-  later(() => miss('逃げられた…'), coach.forgive() ? TUNE.biteWindow * 6 : TUNE.biteWindow);
+  later(() => { shadowFlee(); miss('逃げられた…'); }, coach.forgive() ? TUNE.biteWindow * 6 : TUNE.biteWindow);
 }
 
 // 合わせ（アワセ）: 押さえながらスマホを立てる = 竿を跳ね上げてハリを掛ける動作
@@ -415,8 +447,101 @@ function miss(msg) {
   rod.setLoad(0);
   toast(msg);
   currentCatch = null;
+  activeShadow = null; // 影は解放（そのまま泳ぎ続ける）
   state = 'idle';
   setHint(hintForIdle());
+}
+
+// ---------- 魚影 ----------
+// 水面下を泳ぐ影。着水点の近く(castRadius)に影がいないと魚は食わない = キャストで狙う。
+// 影ごとに中の魚が決まっていて、影の大きさ = 魚の重さ。誘うとウキへ寄ってくる。
+const shadows = [];
+let activeShadow = null;
+
+const shadowW = (c) => 34 + Math.cbrt(c.stats.weight + 0.05) * 17;
+
+function spawnShadow() {
+  const c = draw();
+  const el = document.createElement('div');
+  el.className = 'fishshadow';
+  const w = shadowW(c);
+  el.style.width = `${(w * 2).toFixed(0)}px`;
+  el.style.height = `${(w * 0.85).toFixed(0)}px`;
+  $('shadows').appendChild(el);
+  const sh = {
+    c, el,
+    x: rand(innerWidth * 0.08, innerWidth * 0.92),
+    y: rand(innerHeight * 0.36, innerHeight * 0.86),
+    a: rand(0, Math.PI * 2),
+    sp: rand(TUNE.shadowSpeed[0], TUNE.shadowSpeed[1]),
+    turn: rand(0.6, 1.6),
+  };
+  shadows.push(sh);
+  return sh;
+}
+
+function despawnShadow(sh, dart = false) {
+  const i = shadows.indexOf(sh);
+  if (i >= 0) shadows.splice(i, 1);
+  if (dart) {
+    // 走って逃げる演出: 進行方向へ滑って消える
+    const dx = Math.cos(sh.a) * 160, dy = Math.sin(sh.a) * 60;
+    sh.el.classList.add('dart');
+    sh.el.style.transform = `translate(${sh.x + dx}px, ${sh.y + dy}px) translate(-50%,-50%)`;
+    setTimeout(() => sh.el.remove(), 320);
+  } else {
+    sh.el.remove();
+  }
+}
+
+const refillShadows = () => { while (shadows.length < TUNE.shadowCount) spawnShadow(); };
+function respawnAllShadows() {
+  [...shadows].forEach((sh) => despawnShadow(sh));
+  activeShadow = null;
+  refillShadows();
+}
+
+// 掛けていた魚影が逃げる（アタリ無視/誘いすぎ）
+function shadowFlee() {
+  if (!activeShadow) return;
+  despawnShadow(activeShadow, true);
+  activeShadow = null;
+  refillShadows();
+}
+
+function nearestShadow(x, y) {
+  let best = null, bd = Infinity;
+  for (const sh of shadows) {
+    const d = Math.hypot(sh.x - x, sh.y - y);
+    if (d < bd) { bd = d; best = sh; }
+  }
+  return { sh: best, d: bd };
+}
+
+function updateShadows(dt) {
+  for (const sh of shadows) {
+    if (sh === activeShadow && (state === 'waiting' || state === 'bite')) {
+      // 誘いに乗った影は、興味に比例した速さでウキの真下へ寄る
+      const k = state === 'bite' ? 1 : Math.min(1, lure.interest / 100);
+      const tx = floatPos.x, ty = floatPos.y + 24;
+      const d = Math.hypot(tx - sh.x, ty - sh.y);
+      if (d > 6) {
+        const sp = (8 + TUNE.approachSpeed * k) * dt;
+        sh.x += ((tx - sh.x) / d) * Math.min(sp, d);
+        sh.y += ((ty - sh.y) / d) * Math.min(sp, d);
+      }
+    } else {
+      // ゆらゆら回遊。画面の水面ゾーンで跳ね返る
+      sh.a += rand(-1, 1) * sh.turn * dt;
+      sh.x += Math.cos(sh.a) * sh.sp * dt;
+      sh.y += Math.sin(sh.a) * sh.sp * dt * 0.55;
+      if (sh.x < innerWidth * 0.05) { sh.x = innerWidth * 0.05; sh.a = Math.PI - sh.a; }
+      if (sh.x > innerWidth * 0.95) { sh.x = innerWidth * 0.95; sh.a = Math.PI - sh.a; }
+      if (sh.y < innerHeight * 0.34) { sh.y = innerHeight * 0.34; sh.a = -sh.a; }
+      if (sh.y > innerHeight * 0.88) { sh.y = innerHeight * 0.88; sh.a = -sh.a; }
+    }
+    sh.el.style.transform = `translate(${sh.x.toFixed(1)}px, ${sh.y.toFixed(1)}px) translate(-50%,-50%)`;
+  }
 }
 
 // ---------- 誘い（待機中） ----------
@@ -533,6 +658,7 @@ function lureLoop(now) {
 function spooked() {
   stopLure();
   sfx.snap();
+  shadowFlee();
   miss('誘いすぎ！魚が散った…');
 }
 
@@ -724,6 +850,8 @@ function stopFight() {
 
 function snap() {
   const escaped = currentCatch;
+  recordSeen(escaped);
+  if (activeShadow) { despawnShadow(activeShadow, true); activeShadow = null; refillShadows(); }
   stopFight();
   rod.setLoad(0);
   rod.twitch(1.8); // 糸が切れて竿が跳ね返る
@@ -740,6 +868,8 @@ function snap() {
 // 糸を緩めすぎてハリが外れる = 実釣で最も多いバラシ。糸切れとは別の失敗
 function throwHook() {
   const escaped = currentCatch;
+  recordSeen(escaped);
+  if (activeShadow) { despawnShadow(activeShadow, true); activeShadow = null; refillShadows(); }
   stopFight();
   rod.setLoad(0);
   rod.twitch(1.2);
@@ -754,6 +884,7 @@ function throwHook() {
 }
 
 function land() {
+  if (activeShadow) { despawnShadow(activeShadow); activeShadow = null; refillShadows(); }
   stopFight();
   rod.setLoad(0);
   ripple(floatPos.x, floatPos.y);
@@ -811,19 +942,25 @@ $('again-btn').addEventListener('pointerdown', (e) => {
 
 // ---------- 図鑑モーダル ----------
 function zcell(c) {
-  const caught = zukan[c.name];
-  if (!caught) {
-    const dark = { ...c, palette: SILHOUETTE, effect: 'none', pattern: 'none' };
-    return `<div class="zcell unknown r${c.rarity}">${renderCreature(dark)}
-      <div class="zname">？？？</div><div class="zcount">未発見</div></div>`;
+  const e = zukan[c.name];
+  if (e?.count > 0) {
+    return `<div class="zcell r${c.rarity}">${renderCreature(c)}
+      <div class="zname">${c.name}</div><div class="zcount">×${e.count}</div></div>`;
   }
-  return `<div class="zcell r${c.rarity}">${renderCreature(c)}
-    <div class="zname">${c.name}</div><div class="zcount">×${caught.count}</div></div>`;
+  if (e?.seen) {
+    // 掛けたのにバラした魚だけ、影が載る（「あの影、まだいる…」）
+    const dark = { ...c, palette: SILHOUETTE, effect: 'none', pattern: 'none' };
+    return `<div class="zcell unknown seen r${c.rarity}">${renderCreature(dark)}
+      <div class="zname">？？？</div><div class="zcount">にがした…</div></div>`;
+  }
+  // 未発見は形すら見せない（開けるワクワクを守る）
+  return `<div class="zcell unknown r${c.rarity}"><div class="qmark">?</div>
+    <div class="zname">？？？</div><div class="zcount">未発見</div></div>`;
 }
 
 function openZukan() {
   $('zukan-week').textContent = `${WEEK.id}「${WEEK.theme}」`;
-  const caught = CREATURES.filter((c) => zukan[c.name]).length;
+  const caught = CREATURES.filter((c) => zukan[c.name]?.count > 0).length; // 「逃した」は発見に数えない
   $('zukan-sub').textContent = `${caught} / ${CREATURES.length} 発見　${WEEK.note}`;
   $('zukan-grid').innerHTML = [...CREATURES].sort((a, b) => a.rarity - b.rarity).map(zcell).join('');
   $('zukan-modal').classList.add('show');
@@ -840,6 +977,7 @@ document.body.addEventListener('pointerdown', (e) => {
     const y = Math.min(Math.max(e.clientY, innerHeight * 0.26), innerHeight * 0.9);
     cast(e.clientX, y);
   } else if (state === 'waiting') {
+    if (!activeShadow) { miss('回収した'); return; } // 空振りの一投はタップで回収
     // 合わせは「押さえながらスマホを立てる」なので、ただのタップは常に誘い。
     // 前アタリ中でも誘い続けてよい（早アワセは合わせの動作をした時だけ = lureLoop側で判定）
     hookHeld = true;
@@ -878,6 +1016,7 @@ function rodLoop(now) {
     rod.setAim(dG * TUNE.aimGainGamma + dB * TUNE.aimGainBeta);
   }
   rod.update(dt);
+  updateShadows(dt);
   // 待機/ファイト中は道糸が穂先から出る（穂先が動くので追従が要る）
   if (state === 'waiting' || state === 'bite') drawLine(floatPos.x, floatPos.y);
   requestAnimationFrame(rodLoop);
@@ -904,6 +1043,7 @@ renderPlaces();
 updateZukanCount();
 initCamera();
 initMotion();
+refillShadows();
 if (!coach.seen()) $('intro-modal').classList.add('show');
 
 // ?debug=1 でテスト用フック（非表示タブでは rAF/タイマーが動かないため状態機械を直接進める）
@@ -916,6 +1056,9 @@ if (new URLSearchParams(location.search).has('debug')) {
     forceMotion: () => { motionOn = true; },
     setPointerX: (x) => { lastPointerX = x; },
     lure, doLure, startLure, lureStep, rod, isNibbling, earlyStrike,
+    shadows, nearestShadow, refillShadows, respawnAllShadows,
+    activeShadow: () => activeShadow,
+    zukanStore: zukan, recordSeen, renderCreature,
     setHookHeld: (v) => { hookHeld = v; },
     forceFight: (name) => { // タイマーを介さず直接ファイトに入る
       currentCatch = CREATURES.find((c) => c.name === name) ?? CREATURES[0];

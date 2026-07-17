@@ -9,8 +9,8 @@ const KEY = 'dokodemo.tutorial.done.v1';
 const STEPS = [
   {
     id: 'cast',
-    title: '画面をタップして投げよう',
-    sub: 'スマホを振ってもキャストできる',
+    title: '黒い影が魚だ。近くに投げよう',
+    sub: '影のそばをタップ（スマホを振ってもOK）',
     done: 'cast',
   },
   {

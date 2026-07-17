@@ -24,6 +24,18 @@ function sizeScale(weightKg) {
 }
 
 export function renderCreature(spec) {
+  // 画像1枚もの（手描きの絵・写真など、自動生成でない生き物）。
+  // パーツ合成と同じ枠・同じ重さスケール・同じペットボトル基準で描く
+  if (spec.image) {
+    const s = sizeScale(spec.stats.weight);
+    return `
+<svg viewBox="0 0 240 240" xmlns="http://www.w3.org/2000/svg">
+  ${BOTTLE}
+  <g transform="translate(120 122) scale(${s.toFixed(3)}) translate(-120 -122)">
+    <image href="${spec.image}" x="25" y="25" width="190" height="190" preserveAspectRatio="xMidYMid meet"/>
+  </g>
+</svg>`;
+  }
   const uid = `cr${seq++}`;
   const ids = { grad: `${uid}-grad`, pat: `${uid}-pat` };
   const { primary, secondary, accent } = spec.palette;
