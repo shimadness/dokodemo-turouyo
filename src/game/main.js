@@ -48,6 +48,8 @@ const TUNE = {
   waryLimit: 100,         // 振り切れると魚が散る
   twitchCooldown: 300,    // 連打防止(ms)。これ未満の連打は警戒↑＋興味↓の悪手になる
   nibbleAt: [45, 72, 90], // 興味がこの値を跨ぐと前アタリ（=もうすぐ）
+  nibbleMs: 620,          // 前アタリの見た目/判定が続く時間(CSSの nib .3s×2 と一致させる)
+  earlyPenalty: 30,       // 早アワセ（前アタリ中に合わせた）時に失う興味
   jerkPitch: 22,          // 煽り/合わせ判定のピッチ(度)
   // --- ファイト ---
   reelRate: 17,           // 長押し中の巻き速度(%/s)。魚のちからで減衰
@@ -302,11 +304,34 @@ function nibble() {
   if (state !== 'waiting') return;
   const f = $('float');
   f.classList.remove('nibble');
-  void f.offsetWidth;
+  void f.offsetWidth; // アニメ再始動
   f.classList.add('nibble');
+  // クラスを外し忘れると「前アタリ中」が永久に続いてしまう（実際にバグった）
+  clearTimeout(lure.nibbleTimer);
+  lure.nibbleTimer = setTimeout(() => f.classList.remove('nibble'), TUNE.nibbleMs);
+  lure.nibbleUntil = performance.now() + TUNE.nibbleMs; // 判定はCSSでなく時間で持つ
   ripple(floatPos.x, floatPos.y);
   sfx.nibble();
   navigator.vibrate?.(40);
+}
+
+const isNibbling = () => performance.now() < (lure.nibbleUntil || 0);
+
+// 早アワセ: 前アタリ中に合わせの動作をした = まだ食い込んでないのに引っ張った。
+// 実釣でも同じで、ハリが口から抜けて魚は警戒する。ただし一発でキャストやり直しにはせず
+// 「悪手はゲージが減る」に統一する
+function earlyStrike() {
+  lure.interest = Math.max(0, lure.interest - TUNE.earlyPenalty);
+  lure.wary += TUNE.waryPerJerk;
+  lure.nibbled = 0;
+  lure.nibbleUntil = 0;
+  $('float').classList.remove('nibble');
+  rod.twitch(1.1);
+  sfx.warn();
+  navigator.vibrate?.(60);
+  document.body.classList.add('bad');
+  setTimeout(() => document.body.classList.remove('bad'), 260);
+  toast('早アワセ！まだ食い込んでない…');
 }
 
 function bite() {
@@ -358,10 +383,15 @@ function miss(msg) {
 }
 
 // ---------- 誘い（待機中） ----------
-const lure = { interest: 0, wary: 0, lastTwitch: 0, nibbled: 0, raf: 0, last: 0 };
+const lure = { interest: 0, wary: 0, lastTwitch: 0, nibbled: 0, raf: 0, iv: 0, last: 0,
+               nibbleUntil: 0, nibbleTimer: 0, wasPitched: false };
 
 function startLure() {
   lure.interest = 0; lure.wary = 0; lure.nibbled = 0; lure.lastTwitch = 0;
+  lure.nibbleUntil = 0; lure.wasPitched = false;
+  clearTimeout(lure.nibbleTimer);
+  $('float').classList.remove('nibble');
+  oriBase.beta = ori.beta ?? 0; oriBase.gamma = ori.gamma ?? 0; // 今の持ち方を基準にする
   lure.last = performance.now();
   document.body.classList.add('luring');
   setHint(motionOn ? 'タップで誘え！ スマホを立てると大きく誘える' : 'タップでチョンチョン誘え！');
@@ -375,6 +405,9 @@ function startLure() {
 function stopLure() {
   cancelAnimationFrame(lure.raf);
   clearInterval(lure.iv);
+  clearTimeout(lure.nibbleTimer);
+  lure.nibbleUntil = 0;
+  $('float').classList.remove('nibble');
   document.body.classList.remove('luring', 'spooked');
 }
 
@@ -415,9 +448,13 @@ function lureStep(now) {
   if (dt <= 0) return null;
   lure.last = now;
 
-  // 煽り（スマホを立てる）は押しっぱなしにできないよう、跨いだ瞬間だけ判定
+  // スマホを立てる動作。跨いだ瞬間だけ判定（押しっぱなしで連続発火しないように）
   const pitchNow = motionOn && ori.beta != null && (ori.beta - oriBase.beta) >= TUNE.jerkPitch;
-  if (pitchNow && !lure.wasPitched) doLure('jerk');
+  if (pitchNow && !lure.wasPitched) {
+    // 押さえながら立てる = 合わせの動作。前アタリ中なら早アワセ、そうでなければ竿を煽る誘い
+    if (hookHeld && isNibbling()) earlyStrike();
+    else doLure('jerk');
+  }
   lure.wasPitched = pitchNow;
 
   // 誘いをやめると興味は冷める（=ゲージが減る）。警戒はゆっくり下がる
@@ -434,6 +471,10 @@ function lureStep(now) {
   $('interest-fill').style.width = `${Math.min(100, lure.interest)}%`;
   $('wary-fill').style.width = `${Math.min(100, lure.wary)}%`;
   document.body.classList.toggle('spooked', lure.wary > 75);
+  // 前アタリ中は「まだ合わせるな」を伝える。誘いは続けてよい
+  if (isNibbling()) setHint('食ってる…！ まだ合わせるな、誘い続けろ');
+  else if (lure.wary > 75) setHint('警戒されてる！ 少し待て');
+  else setHint(motionOn ? 'タップで誘え！ スマホを立てると大きく誘える' : 'タップでチョンチョン誘え！');
   rod.setLoad(0.05 + Math.min(1, lure.interest / 100) * 0.06); // 期待でわずかに張る
 
   if (lure.wary >= TUNE.waryLimit) { spooked(); return 'spooked'; }
@@ -746,9 +787,10 @@ document.body.addEventListener('pointerdown', (e) => {
     const y = Math.min(Math.max(e.clientY, innerHeight * 0.26), innerHeight * 0.9);
     cast(e.clientX, y);
   } else if (state === 'waiting') {
-    // 前アタリの最中に合わせると早アワセ。それ以外のタップは「誘い」
-    if ($('float').classList.contains('nibble')) miss('早アワセ！まだ食い込んでない…');
-    else doLure('twitch');
+    // 合わせは「押さえながらスマホを立てる」なので、ただのタップは常に誘い。
+    // 前アタリ中でも誘い続けてよい（早アワセは合わせの動作をした時だけ = lureLoop側で判定）
+    hookHeld = true;
+    doLure('twitch');
   } else if (state === 'bite') {
     hookHeld = true;
     if (!motionOn) startFight(); // センサー無し端末はタップだけで合わせられる
@@ -796,7 +838,8 @@ if (new URLSearchParams(location.search).has('debug')) {
     catchName: () => currentCatch?.name ?? null,
     forceMotion: () => { motionOn = true; },
     setPointerX: (x) => { lastPointerX = x; },
-    lure, doLure, startLure, lureStep, rod,
+    lure, doLure, startLure, lureStep, rod, isNibbling, earlyStrike,
+    setHookHeld: (v) => { hookHeld = v; },
     forceFight: (name) => { // タイマーを介さず直接ファイトに入る
       currentCatch = CREATURES.find((c) => c.name === name) ?? CREATURES[0];
       landPos = { x: innerWidth / 2, y: innerHeight / 2 };
