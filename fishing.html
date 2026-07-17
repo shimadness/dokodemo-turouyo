@@ -181,6 +181,15 @@
 
   /* ポンピング中: テンションバーが青系に変わる=抜けている合図 */
   body.pumping #tension-fill { background: linear-gradient(90deg, #3ddb84, #3dc8ff); }
+  #slack-fill { background: linear-gradient(90deg, #6a7398, #c86dff 60%, #ff4a4a); }
+  body.slacking #slack-fill { animation: dangerpulse .5s ease-in-out infinite; }
+  body.slacking .ftrack { border-color: #8a4ac0; }
+
+  /* 悪手（誘いの連打）: 画面が一瞬赤くフラッシュして「今のはマズい」を伝える */
+  body.bad #vignette {
+    opacity: 1;
+    background: radial-gradient(ellipse at center, transparent 40%, rgba(255,60,60,.5));
+  }
 
   /* ---- 結果 / 図鑑 モーダル ---- */
   .modal {
@@ -295,6 +304,10 @@
     <div class="fbar">
       <div class="flabel">糸のテンション</div>
       <div class="ftrack"><div class="ffill" id="tension-fill"></div></div>
+    </div>
+    <div class="fbar">
+      <div class="flabel">糸ふけ（たるみ）</div>
+      <div class="ftrack"><div class="ffill" id="slack-fill"></div></div>
     </div>
     <div id="fight-hint">長押しで巻け！</div>
   </div>

@@ -3,16 +3,25 @@
 //        → fight(巻き/いなし/ポンピング) → 釣果 / 逃走(シルエット提示)
 // 場所チップが抽選テーブルを変える。将来ここを GPS 判定に差し替える。
 //
+// 実釣の理屈に寄せてある（DAIWA/ヤマハ等の解説を調査して反映）:
+//   ・魚が走ってドラグが出ている間はリールを巻かない（糸ヨレ・高切れの元）。耐える
+//   ・魚が右に走ればロッドを左に倒す = ロッドの弾力で「いなす」
+//   ・ラインは常に張る。緩むとハリがグラグラになって外れる（バラシの主因）
+//   ・ポンピング = 竿を立てて寄せ、倒しながら緩んだ分を巻き取る。倒す時に巻かないと糸が緩む
+//   ・魚が跳ねそうな時は竿先を下げる（跳ねられるとハリが外れやすい）
+//
 // 待機の操作系（受動的な「待つだけ」を廃し、誘いのゲームにした）:
 //   短くタップ       = チョンと誘う（興味↑ 警戒↑）。連打は警戒だけ増える
 //   スマホを立てる   = 竿を煽る（興味↑↑ 警戒↑↑）
-//   何もしない       = 警戒が下がる。興味もゆっくり増えるので放置でも一応釣れる
+//   何もしない       = 警戒が下がる。興味もゆっくり増える
 //   → 興味が満ちるとアタリ / 警戒が振り切れると魚が散る
+//   → アタリが出たら「タップしながらスマホを立てる」= 本アワセでファイト開始
 //
 // ファイトの操作系（センサー無しでも成立、センサーで上手くなる）:
-//   長押し           = 巻く
-//   走られ中に逆へ傾け = いなし（巻き続けられる）。無センサー時は走りと逆側の画面を押さえる
-//   スマホを立てる     = 竿を立てる（巻き半速・テンションが抜ける = ポンピング）
+//   長押し             = リールを巻く
+//   走られ中に逆へ傾け  = いなし。無センサー時は走りと逆側の画面を押さえる
+//   スマホを立てる      = 竿を立てて魚を浮かせる（寄る。ただし糸を巻かないと緩む）
+//   スマホを倒しながら巻く = ポンピングの巻き取り局面（緩みを回収）
 import { renderCreature } from '../render.js';
 import { WEEK, CREATURES } from '../weeks/2026-w29-deepsea-neon.js';
 import { sfx } from './sfx.js';
@@ -28,16 +37,18 @@ const TUNE = {
   biteWindow: 1100,       // 合わせ猶予(ms)
   // --- 誘い（待機中のゲーム性） ---
   interestNeed: 100,      // これに達するとアタリ
-  interestIdle: 12,       // 何もしない時の興味の増え方(/s)。放置でも8秒強で釣れる(誘えば3秒弱)
-  interestTwitch: 13,     // 短タップ1回の誘い
-  interestJerk: 26,       // 竿を煽る(スマホを立てる)1回の誘い
-  waryPerTwitch: 9,       // 誘い1回ごとの警戒上昇
-  waryPerJerk: 16,        // 煽りは効くが警戒も強い
+  interestIdle: 0,        // 放置では増えない（誘わないと釣れない）
+  interestDecay: 7,       // 誘いをやめると興味は冷める(/s) ← ゲージが減る
+  interestTwitch: 15,     // 短タップ1回の誘い
+  interestJerk: 30,       // 竿を煽る(スマホを立てる)1回の誘い
+  interestPenalty: 22,    // 悪手(連打で警戒させた)時に興味が失われる量 ← 悪手で減る
+  waryPerTwitch: 9,
+  waryPerJerk: 16,
   waryDecay: 11,          // 何もしない時の警戒の下降(/s)
   waryLimit: 100,         // 振り切れると魚が散る
-  twitchCooldown: 260,    // 連打防止(ms)。これ未満の連打は警戒だけ増える
+  twitchCooldown: 300,    // 連打防止(ms)。これ未満の連打は警戒↑＋興味↓の悪手になる
   nibbleAt: [45, 72, 90], // 興味がこの値を跨ぐと前アタリ（=もうすぐ）
-  jerkPitch: 22,          // 煽り判定のピッチ(度)
+  jerkPitch: 22,          // 煽り/合わせ判定のピッチ(度)
   // --- ファイト ---
   reelRate: 17,           // 長押し中の巻き速度(%/s)。魚のちからで減衰
   reelRateRun: 0,         // 走られ中（いなし無し）は巻いても寄らない ← いなしの価値
@@ -57,8 +68,15 @@ const TUNE = {
   swingMax: 34,           // 最大飛距離になる加速度
   counterTilt: 12,        // いなし判定の左右傾き(度)
   pumpPitch: 15,          // 竿立て判定のピッチ(度)
-  pumpReelMul: 0.5,       // 竿立て中の巻き速度倍率
-  pumpShed: 22,           // 竿立て中のテンション追加下降(/s)
+  // ポンピング（実釣どおり）: 竿を立てて魚を浮かせ、倒しながら緩んだ分を巻き取る。
+  // 立てている間はリールを巻かなくても寄る代わりに、糸がどんどん緩む。
+  // 緩みは「倒しながら巻く」で回収する。緩んだまま放置するとハリが外れてバレる。
+  pumpLift: 14,           // 竿を立てている間に寄る量(%/s)。巻きより速い＝立てる価値
+  pumpShed: 26,           // 竿を立てている間のテンション下降(/s)
+  slackPerSec: 34,        // 竿を立てている間に増える「糸ふけ」(/s)
+  slackRecover: 60,       // 竿を倒して巻いている時の糸ふけ回収(/s)
+  slackLimit: 100,        // 糸ふけが振り切れる=ハリが外れてバラす
+  slackDecayWind: 26,     // 竿を倒して巻いていない時も少しは回収される(/s)
 };
 // ==========================================
 
@@ -211,6 +229,7 @@ let floatPos = { x: 0, y: 0 };
 let landPos = { x: 0, y: 0 };
 let currentCatch = null;
 let lastPointerX = null; // 無センサー時のいなし判定に使う
+let hookHeld = false;    // 合わせ: 画面を押さえているか
 
 const rodTip = () => rod.screenTip(); // 竿の物理から実際の穂先位置を取る
 
@@ -294,6 +313,7 @@ function bite() {
   if (state !== 'waiting') return;
   stopLure();
   state = 'bite';
+  hookWatch();
   document.body.classList.add('bite');
   const f = $('float');
   f.classList.remove('landed', 'nibble');
@@ -303,8 +323,22 @@ function bite() {
   b.style.display = 'block';
   sfx.bite();
   navigator.vibrate?.(200);
-  setHint('今だ！タップ！');
+  setHint(motionOn ? '今だ！ 押さえてスマホを立てろ！' : '今だ！タップ！');
   later(() => miss('逃げられた…'), TUNE.biteWindow);
+}
+
+// 合わせ（アワセ）: 押さえながらスマホを立てる = 竿を跳ね上げてハリを掛ける動作
+// センサーが無い端末はタップだけで合わせられる（入力ハンドラ側）
+let hookIv = 0;
+function hookWatch() {
+  clearInterval(hookIv);
+  if (!motionOn) return;
+  const base = ori.beta;
+  hookIv = setInterval(() => {
+    if (state !== 'bite') { clearInterval(hookIv); return; }
+    if (!hookHeld || ori.beta == null || base == null) return;
+    if (ori.beta - base >= TUNE.jerkPitch) { clearInterval(hookIv); startFight(); }
+  }, 40);
 }
 
 function miss(msg) {
@@ -349,9 +383,13 @@ function doLure(kind) {
   const now = performance.now();
   const tooFast = now - lure.lastTwitch < TUNE.twitchCooldown;
   lure.lastTwitch = now;
-  if (tooFast) { // 連打は警戒だけ増える = 「焦るな」
+  if (tooFast) { // 連打 = 悪手。警戒が増えるうえに、警戒した魚は興味を失う
     lure.wary += TUNE.waryPerTwitch;
-    sfx.nibble();
+    lure.interest = Math.max(0, lure.interest - TUNE.interestPenalty);
+    lure.nibbled = 0; // 前アタリのサインもやり直し
+    document.body.classList.add('bad');
+    setTimeout(() => document.body.classList.remove('bad'), 260);
+    sfx.warn();
     return;
   }
   if (kind === 'jerk') {
@@ -382,7 +420,8 @@ function lureStep(now) {
   if (pitchNow && !lure.wasPitched) doLure('jerk');
   lure.wasPitched = pitchNow;
 
-  lure.interest += TUNE.interestIdle * dt;
+  // 誘いをやめると興味は冷める（=ゲージが減る）。警戒はゆっくり下がる
+  lure.interest = Math.max(0, lure.interest - TUNE.interestDecay * dt);
   lure.wary = Math.max(0, lure.wary - TUNE.waryDecay * dt);
 
   // 前アタリ = 興味の高まりのサイン（もう「ランダム」ではない）
@@ -415,7 +454,7 @@ function spooked() {
 
 // ---------- ファイト ----------
 const fight = {
-  progress: 0, tension: 0, holding: false,
+  progress: 0, tension: 0, slack: 0, holding: false,
   running: false, runDir: 0, raf: 0, iv: 0, last: 0,
 };
 
@@ -430,6 +469,7 @@ function startFight() {
   navigator.vibrate?.([60, 40, 60]);
   fight.progress = 12;
   fight.tension = 20;
+  fight.slack = 0;
   fight.holding = false;
   fight.running = false;
   fight.runDir = 0;
@@ -495,11 +535,11 @@ function fightStep(now) {
   const pumping = isPumping();
   const tensionHold = TUNE.tensionHoldBase + TUNE.tensionHoldPer * power;
   const tensionRun = TUNE.tensionRunBase + TUNE.tensionRunPer * power;
-  let reel = TUNE.reelRate * (1 - power / 170);
-  if (pumping) reel *= TUNE.pumpReelMul;
+  const reel = TUNE.reelRate * (1 - power / 170);
 
   if (fight.holding) {
     if (fight.running) {
+      // ドラグが出ている間に巻くのは実釣でも悪手（糸ヨレ・高切れ）。いなせば巻ける
       fight.progress += (countered ? TUNE.reelRateCounter : TUNE.reelRateRun) * dt;
       fight.tension += (countered ? TUNE.tensionCounter : tensionRun) * dt;
     } else {
@@ -510,18 +550,30 @@ function fightStep(now) {
     fight.progress -= (fight.running ? TUNE.progressDecayRun : TUNE.progressDecay) * dt;
     fight.tension -= TUNE.tensionDecay * dt;
   }
-  if (pumping) fight.tension -= TUNE.pumpShed * dt;
+
+  // ポンピング: 竿を立てる=魚が浮いて寄る（巻きより速い）が、糸ふけが増える
+  if (pumping) {
+    fight.progress += TUNE.pumpLift * dt;
+    fight.tension -= TUNE.pumpShed * dt;
+    fight.slack += TUNE.slackPerSec * dt;
+  } else {
+    // 竿を倒している局面。巻いていれば緩みを一気に回収する（= ポンピングの後半）
+    fight.slack -= (fight.holding ? TUNE.slackRecover : TUNE.slackDecayWind) * dt;
+  }
   fight.progress = Math.max(0, fight.progress);
   fight.tension = Math.max(0, fight.tension);
+  fight.slack = Math.max(0, fight.slack);
 
   // ヒント（状況で切り替え）
-  if (fight.running) {
+  if (fight.slack > 55) {
+    setFightHint('糸がたるんでる！竿を倒して巻け！'); // 最優先。緩むとハリが外れる
+  } else if (fight.running) {
     if (countered) setFightHint('いなしてる！巻け巻け！');
     else setFightHint(fight.runDir > 0 ? '➡ 右に走ってる！左へいなせ！' : '⬅ 左に走ってる！右へいなせ！');
   } else if (pumping) {
-    setFightHint('テンションが抜けていく…！');
+    setFightHint('浮いてくる！ 倒して巻いて糸を回収！');
   } else if (fight.tension > 70) {
-    setFightHint(motionOn ? 'スマホを起こして竿を立てろ！' : '一旦離して休ませろ！');
+    setFightHint(motionOn ? 'スマホを立てて竿を起こせ！' : '一旦離して休ませろ！');
   }
 
   // 手触りパルス（音+振動を状態ごとのリズムで刻む）。iOSは音が主役(vibrate非対応)
@@ -536,7 +588,7 @@ function fightStep(now) {
     else sfx.reelTick();
   }
   // 危険域(テンション78+): 独立した警告リズム + 画面が赤く滲む
-  const danger = fight.tension > 78;
+  const danger = fight.tension > 78 || fight.slack > 78;
   if (danger && now - (fight.warnAt || 0) > 350) {
     fight.warnAt = now;
     sfx.warn(); navigator.vibrate?.(50);
@@ -555,10 +607,13 @@ function fightStep(now) {
 
   $('reel-fill').style.width = `${Math.min(100, fight.progress)}%`;
   $('tension-fill').style.width = `${Math.min(100, fight.tension)}%`;
+  $('slack-fill').style.width = `${Math.min(100, fight.slack)}%`;
+  document.body.classList.toggle('slacking', fight.slack > 55);
   rod.setLoad(0.18 + (fight.tension / 100) * 0.82); // テンションで竿がしなる
   if (fight.running && !countered) rod.twitch(0.25); // 走られると竿が叩かれる
 
   if (fight.tension >= 100) { snap(); return 'snap'; }
+  if (fight.slack >= TUNE.slackLimit) { throwHook(); return 'slack'; } // 糸を緩めすぎ=ハリが外れる
   if (fight.progress >= 100) { land(); return 'land'; }
   return null;
 }
@@ -571,7 +626,7 @@ function fightLoop(now) {
 function stopFight() {
   cancelAnimationFrame(fight.raf);
   clearInterval(fight.iv);
-  document.body.classList.remove('fighting', 'run', 'danger', 'pumping');
+  document.body.classList.remove('fighting', 'run', 'danger', 'pumping', 'slacking');
 }
 
 function snap() {
@@ -582,6 +637,22 @@ function snap() {
   sfx.snap();
   navigator.vibrate?.(300);
   showEscape(escaped);
+  clearTimers();
+  document.body.classList.remove('bite');
+  $('float').style.opacity = '0';
+  clearLine();
+  state = 'result';
+}
+
+// 糸を緩めすぎてハリが外れる = 実釣で最も多いバラシ。糸切れとは別の失敗
+function throwHook() {
+  const escaped = currentCatch;
+  stopFight();
+  rod.setLoad(0);
+  rod.twitch(1.2);
+  sfx.snap();
+  navigator.vibrate?.(300);
+  showEscape(escaped, 'slack');
   clearTimers();
   document.body.classList.remove('bite');
   $('float').style.opacity = '0';
@@ -621,16 +692,19 @@ function showResult(c, isNew) {
   state = 'result';
 }
 
-function showEscape(c) {
+function showEscape(c, reason = 'snap') {
   const dark = { ...c, palette: SILHOUETTE, effect: 'none', pattern: 'none' };
   const stars = '★'.repeat(c.rarity) + '☆'.repeat(5 - c.rarity);
+  const R = reason === 'slack'
+    ? { title: 'ハリが外れた…！', tip: '竿を立てたら、倒しながら巻いて糸を回収しよう' }
+    : { title: '糸が切れた…！', tip: '走られたら逆へいなすか、指を離してかわそう' };
   $('result-card').innerHTML = `
     <div class="card">
       <div class="stage">${renderCreature(dark)}</div>
       <div class="stars">${stars}</div>
-      <h2>糸が切れた…！</h2>
+      <h2>${R.title}</h2>
       <p class="flavor">${c.stats.weight}kg くらいの影が、ゆっくり消えていった。</p>
-      <div class="statline">走られたら逆へいなすか、指を離してかわそう</div>
+      <div class="statline">${R.tip}</div>
     </div>`;
   $('result-modal').classList.add('show');
 }
@@ -676,7 +750,8 @@ document.body.addEventListener('pointerdown', (e) => {
     if ($('float').classList.contains('nibble')) miss('早アワセ！まだ食い込んでない…');
     else doLure('twitch');
   } else if (state === 'bite') {
-    startFight();
+    hookHeld = true;
+    if (!motionOn) startFight(); // センサー無し端末はタップだけで合わせられる
   } else if (state === 'fight') {
     fight.holding = true;
   }
@@ -684,7 +759,7 @@ document.body.addEventListener('pointerdown', (e) => {
 document.body.addEventListener('pointermove', (e) => {
   if (state === 'fight' && fight.holding) lastPointerX = e.clientX; // 指を滑らせていなす
 });
-const release = () => { fight.holding = false; };
+const release = () => { fight.holding = false; hookHeld = false; };
 document.body.addEventListener('pointerup', release);
 document.body.addEventListener('pointercancel', release);
 
