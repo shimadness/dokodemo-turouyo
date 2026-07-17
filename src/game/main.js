@@ -1,7 +1,13 @@
 // 釣り本体
-// 流れ: idle → casting → waiting → (前アタリ×0〜3) → bite(合わせ猶予)
+// 流れ: idle → casting → waiting(誘い) → bite(合わせ猶予)
 //        → fight(巻き/いなし/ポンピング) → 釣果 / 逃走(シルエット提示)
 // 場所チップが抽選テーブルを変える。将来ここを GPS 判定に差し替える。
+//
+// 待機の操作系（受動的な「待つだけ」を廃し、誘いのゲームにした）:
+//   短くタップ       = チョンと誘う（興味↑ 警戒↑）。連打は警戒だけ増える
+//   スマホを立てる   = 竿を煽る（興味↑↑ 警戒↑↑）
+//   何もしない       = 警戒が下がる。興味もゆっくり増えるので放置でも一応釣れる
+//   → 興味が満ちるとアタリ / 警戒が振り切れると魚が散る
 //
 // ファイトの操作系（センサー無しでも成立、センサーで上手くなる）:
 //   長押し           = 巻く
@@ -10,19 +16,28 @@
 import { renderCreature } from '../render.js';
 import { WEEK, CREATURES } from '../weeks/2026-w29-deepsea-neon.js';
 import { sfx } from './sfx.js';
+import { rod } from './rod.js';
 
 const $ = (id) => document.getElementById(id);
 const rand = (a, b) => a + Math.random() * (b - a);
-const randi = (a, b) => Math.floor(rand(a, b + 1));
 
 // ================= 調整卓 =================
 // 手触りのフィードバックはまずここを触る
 const TUNE = {
   castMs: 580,            // キャスト飛行時間
-  biteDelay: [1400, 4200], // 着水→本アタリまで
-  nibbleCount: [0, 3],    // 前アタリ回数
-  nibbleGap: [650, 1500],
   biteWindow: 1100,       // 合わせ猶予(ms)
+  // --- 誘い（待機中のゲーム性） ---
+  interestNeed: 100,      // これに達するとアタリ
+  interestIdle: 12,       // 何もしない時の興味の増え方(/s)。放置でも8秒強で釣れる(誘えば3秒弱)
+  interestTwitch: 13,     // 短タップ1回の誘い
+  interestJerk: 26,       // 竿を煽る(スマホを立てる)1回の誘い
+  waryPerTwitch: 9,       // 誘い1回ごとの警戒上昇
+  waryPerJerk: 16,        // 煽りは効くが警戒も強い
+  waryDecay: 11,          // 何もしない時の警戒の下降(/s)
+  waryLimit: 100,         // 振り切れると魚が散る
+  twitchCooldown: 260,    // 連打防止(ms)。これ未満の連打は警戒だけ増える
+  nibbleAt: [45, 72, 90], // 興味がこの値を跨ぐと前アタリ（=もうすぐ）
+  jerkPitch: 22,          // 煽り判定のピッチ(度)
   // --- ファイト ---
   reelRate: 17,           // 長押し中の巻き速度(%/s)。魚のちからで減衰
   reelRateRun: 0,         // 走られ中（いなし無し）は巻いても寄らない ← いなしの価値
@@ -197,7 +212,7 @@ let landPos = { x: 0, y: 0 };
 let currentCatch = null;
 let lastPointerX = null; // 無センサー時のいなし判定に使う
 
-const rodTip = () => ({ x: innerWidth - 190, y: innerHeight - 235 });
+const rodTip = () => rod.screenTip(); // 竿の物理から実際の穂先位置を取る
 
 function drawLine(toX, toY, taut = false) {
   const t = rodTip();
@@ -239,6 +254,7 @@ function setFightHint(msg) {
 function cast(x, y) {
   state = 'casting';
   document.body.classList.add('casting');
+  rod.twitch(1.4); // 振り抜き
   const f = $('float');
   const t = rodTip();
   f.classList.remove('landed', 'dunk', 'nibble');
@@ -258,20 +274,9 @@ function cast(x, y) {
     f.classList.add('landed');
     sfx.splash();
     state = 'waiting';
-    setHint('……');
-    scheduleBite();
+    currentCatch = draw(); // この一投の魚を先に決める（誘いの手応えも魚で変わる）
+    startLure();
   }, TUNE.castMs);
-}
-
-function scheduleBite() {
-  currentCatch = draw();
-  const nibbles = randi(TUNE.nibbleCount[0], TUNE.nibbleCount[1]);
-  let delay = rand(TUNE.biteDelay[0], TUNE.biteDelay[1]);
-  for (let i = 0; i < nibbles; i++) {
-    later(nibble, delay);
-    delay += rand(TUNE.nibbleGap[0], TUNE.nibbleGap[1]);
-  }
-  later(bite, delay);
 }
 
 function nibble() {
@@ -287,6 +292,7 @@ function nibble() {
 
 function bite() {
   if (state !== 'waiting') return;
+  stopLure();
   state = 'bite';
   document.body.classList.add('bite');
   const f = $('float');
@@ -303,16 +309,108 @@ function bite() {
 
 function miss(msg) {
   clearTimers();
+  stopLure();
   stopFight();
   document.body.classList.remove('bite', 'casting');
   $('bite-mark').style.display = 'none';
   $('float').style.opacity = '0';
   $('float').classList.remove('landed', 'dunk', 'nibble');
   clearLine();
+  rod.setLoad(0);
   toast(msg);
   currentCatch = null;
   state = 'idle';
   setHint(motionOn ? 'スマホを振ってキャスト！（タップでもOK）' : '画面をタップしてキャスト');
+}
+
+// ---------- 誘い（待機中） ----------
+const lure = { interest: 0, wary: 0, lastTwitch: 0, nibbled: 0, raf: 0, last: 0 };
+
+function startLure() {
+  lure.interest = 0; lure.wary = 0; lure.nibbled = 0; lure.lastTwitch = 0;
+  lure.last = performance.now();
+  document.body.classList.add('luring');
+  setHint(motionOn ? 'タップで誘え！ スマホを立てると大きく誘える' : 'タップでチョンチョン誘え！');
+  lure.raf = requestAnimationFrame(lureLoop);
+  // rAFが止まる環境（非表示タブ・省電力WebView）でも誘いが進む保険
+  lure.iv = setInterval(() => {
+    if (state === 'waiting' && performance.now() - lure.last > 200) lureStep(performance.now());
+  }, 150);
+}
+
+function stopLure() {
+  cancelAnimationFrame(lure.raf);
+  clearInterval(lure.iv);
+  document.body.classList.remove('luring', 'spooked');
+}
+
+// 誘う（短タップ or 煽り）
+function doLure(kind) {
+  const now = performance.now();
+  const tooFast = now - lure.lastTwitch < TUNE.twitchCooldown;
+  lure.lastTwitch = now;
+  if (tooFast) { // 連打は警戒だけ増える = 「焦るな」
+    lure.wary += TUNE.waryPerTwitch;
+    sfx.nibble();
+    return;
+  }
+  if (kind === 'jerk') {
+    lure.interest += TUNE.interestJerk;
+    lure.wary += TUNE.waryPerJerk;
+    rod.twitch(1);
+    sfx.splash();
+  } else {
+    lure.interest += TUNE.interestTwitch;
+    lure.wary += TUNE.waryPerTwitch;
+    rod.twitch(0.55);
+    sfx.reelTick();
+  }
+  ripple(floatPos.x, floatPos.y);
+  document.body.classList.add('twitching');
+  setTimeout(() => document.body.classList.remove('twitching'), 180);
+}
+
+// 誘いの1ステップ。'spooked' | 'bite' | null を返す
+function lureStep(now) {
+  if (state !== 'waiting') return null;
+  const dt = Math.min(0.05, (now - lure.last) / 1000);
+  if (dt <= 0) return null;
+  lure.last = now;
+
+  // 煽り（スマホを立てる）は押しっぱなしにできないよう、跨いだ瞬間だけ判定
+  const pitchNow = motionOn && ori.beta != null && (ori.beta - oriBase.beta) >= TUNE.jerkPitch;
+  if (pitchNow && !lure.wasPitched) doLure('jerk');
+  lure.wasPitched = pitchNow;
+
+  lure.interest += TUNE.interestIdle * dt;
+  lure.wary = Math.max(0, lure.wary - TUNE.waryDecay * dt);
+
+  // 前アタリ = 興味の高まりのサイン（もう「ランダム」ではない）
+  const marks = TUNE.nibbleAt;
+  if (lure.nibbled < marks.length && lure.interest >= marks[lure.nibbled]) {
+    lure.nibbled++;
+    nibble();
+  }
+
+  $('interest-fill').style.width = `${Math.min(100, lure.interest)}%`;
+  $('wary-fill').style.width = `${Math.min(100, lure.wary)}%`;
+  document.body.classList.toggle('spooked', lure.wary > 75);
+  rod.setLoad(0.05 + Math.min(1, lure.interest / 100) * 0.06); // 期待でわずかに張る
+
+  if (lure.wary >= TUNE.waryLimit) { spooked(); return 'spooked'; }
+  if (lure.interest >= TUNE.interestNeed) { bite(); return 'bite'; }
+  return null;
+}
+
+function lureLoop(now) {
+  if (lureStep(now)) return;
+  if (state === 'waiting') lure.raf = requestAnimationFrame(lureLoop);
+}
+
+function spooked() {
+  stopLure();
+  sfx.snap();
+  miss('誘いすぎ！魚が散った…');
 }
 
 // ---------- ファイト ----------
@@ -323,6 +421,7 @@ const fight = {
 
 function startFight() {
   clearTimers();
+  stopLure();
   document.body.classList.remove('bite');
   $('bite-mark').style.display = 'none';
   $('float').classList.remove('dunk');
@@ -456,6 +555,8 @@ function fightStep(now) {
 
   $('reel-fill').style.width = `${Math.min(100, fight.progress)}%`;
   $('tension-fill').style.width = `${Math.min(100, fight.tension)}%`;
+  rod.setLoad(0.18 + (fight.tension / 100) * 0.82); // テンションで竿がしなる
+  if (fight.running && !countered) rod.twitch(0.25); // 走られると竿が叩かれる
 
   if (fight.tension >= 100) { snap(); return 'snap'; }
   if (fight.progress >= 100) { land(); return 'land'; }
@@ -476,6 +577,8 @@ function stopFight() {
 function snap() {
   const escaped = currentCatch;
   stopFight();
+  rod.setLoad(0);
+  rod.twitch(1.8); // 糸が切れて竿が跳ね返る
   sfx.snap();
   navigator.vibrate?.(300);
   showEscape(escaped);
@@ -488,6 +591,7 @@ function snap() {
 
 function land() {
   stopFight();
+  rod.setLoad(0);
   ripple(floatPos.x, floatPos.y);
   sfx.land();
   navigator.vibrate?.([60, 40, 120]);
@@ -568,8 +672,9 @@ document.body.addEventListener('pointerdown', (e) => {
     const y = Math.min(Math.max(e.clientY, innerHeight * 0.26), innerHeight * 0.9);
     cast(e.clientX, y);
   } else if (state === 'waiting') {
+    // 前アタリの最中に合わせると早アワセ。それ以外のタップは「誘い」
     if ($('float').classList.contains('nibble')) miss('早アワセ！まだ食い込んでない…');
-    else miss('回収した');
+    else doLure('twitch');
   } else if (state === 'bite') {
     startFight();
   } else if (state === 'fight') {
@@ -589,6 +694,18 @@ const muteLabel = () => { muteBtn.textContent = sfx.isMuted() ? '🔇' : '🔊';
 muteBtn.addEventListener('click', (e) => { e.stopPropagation(); sfx.toggleMute(); muteLabel(); });
 muteLabel();
 
+// ---------- 竿の物理（常時） ----------
+let rodLast = performance.now();
+function rodLoop(now) {
+  const dt = Math.min(0.05, (now - rodLast) / 1000);
+  rodLast = now;
+  rod.update(dt);
+  // 待機/ファイト中は道糸が穂先から出る（穂先が動くので追従が要る）
+  if (state === 'waiting' || state === 'bite') drawLine(floatPos.x, floatPos.y);
+  requestAnimationFrame(rodLoop);
+}
+requestAnimationFrame(rodLoop);
+
 // ---------- 起動 ----------
 renderPlaces();
 updateZukanCount();
@@ -604,6 +721,7 @@ if (new URLSearchParams(location.search).has('debug')) {
     catchName: () => currentCatch?.name ?? null,
     forceMotion: () => { motionOn = true; },
     setPointerX: (x) => { lastPointerX = x; },
+    lure, doLure, startLure, lureStep, rod,
     forceFight: (name) => { // タイマーを介さず直接ファイトに入る
       currentCatch = CREATURES.find((c) => c.name === name) ?? CREATURES[0];
       landPos = { x: innerWidth / 2, y: innerHeight / 2 };
