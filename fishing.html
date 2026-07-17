@@ -163,6 +163,7 @@
     background: rgba(30,38,68,.8); color: #9aa3c8; border: 1px solid #2a3358;
   }
   #motion-btn.on { color: #7fff9d; border-color: #2a6a3e; }
+  #motion-btn.dead { color: #ff8a8a; border-color: #6a2a2a; }
   #motion-btn.hidden { display: none; }
   #mute-btn {
     font-size: 13px; padding: 5px 9px; border-radius: 999px; cursor: pointer;
@@ -189,6 +190,51 @@
   body.bad #vignette {
     opacity: 1;
     background: radial-gradient(ellipse at center, transparent 40%, rgba(255,60,60,.5));
+  }
+
+  /* ---- チュートリアル（コーチ） ---- */
+  #coach {
+    /* トップバーは狭い画面で2段になる（実測 約115px）。その下に置く */
+    position: fixed; top: 126px; left: 50%; transform: translateX(-50%) translateY(-12px);
+    width: min(340px, 90vw); z-index: 25; text-align: center;
+    background: linear-gradient(180deg, rgba(30,42,88,.97), rgba(18,26,58,.97));
+    border: 2px solid #5a6aff; border-radius: 16px; padding: 12px 16px;
+    box-shadow: 0 6px 26px rgba(0,0,0,.5);
+    opacity: 0; pointer-events: none; transition: opacity .22s, transform .22s;
+  }
+  #coach.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #coach.warn { border-color: #ff6b6b; animation: coachwarn .25s 2; }
+  @keyframes coachwarn { 50% { transform: translateX(-50%) scale(1.04); } }
+  #coach-step {
+    font-size: 10px; color: #8a93b8; letter-spacing: 2px; margin-bottom: 4px;
+  }
+  #coach-title { font-size: 17px; font-weight: bold; line-height: 1.4; }
+  #coach-sub { font-size: 12px; color: #b8c2ee; margin-top: 5px; line-height: 1.5; }
+
+  #coach-done {
+    position: fixed; top: 34%; left: 50%; transform: translate(-50%,-50%) scale(.8);
+    z-index: 35; font-size: 20px; font-weight: bold; color: #fff;
+    background: linear-gradient(180deg, #3a48d8, #2a2f8a);
+    padding: 16px 28px; border-radius: 18px; text-align: center;
+    opacity: 0; pointer-events: none; transition: opacity .25s, transform .25s;
+  }
+  #coach-done.show { opacity: 1; transform: translate(-50%,-50%) scale(1); }
+  #coach-done span { display: block; font-size: 12px; font-weight: normal; color: #cdd6f4; margin-top: 6px; }
+
+  .intro {
+    width: min(320px, 86vw); text-align: center;
+    background: linear-gradient(180deg, #1b2340, #141a30);
+    border: 2px solid #3a4368; border-radius: 20px; padding: 24px 22px;
+  }
+  .intro-icon { font-size: 44px; margin-bottom: 6px; }
+  .intro h2 { font-size: 20px; margin-bottom: 10px; }
+  .intro p { font-size: 13px; color: #9aa3c8; line-height: 1.7; }
+  .intro .btnrow { display: flex; gap: 10px; margin-top: 18px; justify-content: center; }
+
+  /* 復習ボタン */
+  #help-btn {
+    font-size: 13px; padding: 5px 9px; border-radius: 999px; cursor: pointer;
+    background: rgba(30,38,68,.8); border: 1px solid #2a3358; white-space: nowrap; flex: none;
   }
 
   /* ---- 結果 / 図鑑 モーダル ---- */
@@ -251,6 +297,7 @@
   <div id="topbar">
     <span class="title">🎣 どこでも釣ろうよ</span>
     <div class="place-chips" id="places"></div>
+    <button id="help-btn">？</button>
     <button id="mute-btn">🔊</button>
     <button id="motion-btn" class="hidden">📳 振りキャスト</button>
     <button id="zukan-btn">図鑑 <span id="zukan-count"></span></button>
@@ -287,6 +334,25 @@
   <div id="bite-mark">❗</div>
   <div id="hint">画面をタップしてキャスト</div>
   <div id="toast"></div>
+
+  <div id="coach">
+    <div id="coach-step"></div>
+    <div id="coach-title"></div>
+    <div id="coach-sub"></div>
+  </div>
+  <div id="coach-done">🎉 チュートリアル完了！<span>あとは自由に釣ろう</span></div>
+
+  <div class="modal" id="intro-modal">
+    <div class="intro">
+      <div class="intro-icon">🎣</div>
+      <h2>はじめての釣り</h2>
+      <p>やり方を1つずつ教えます。<br>最初の1匹は必ず釣れます。</p>
+      <div class="btnrow">
+        <button class="btn" id="intro-start">やってみる</button>
+        <button class="btn ghost" id="intro-skip">スキップ</button>
+      </div>
+    </div>
+  </div>
 
   <div id="lure-ui">
     <div class="lbar">

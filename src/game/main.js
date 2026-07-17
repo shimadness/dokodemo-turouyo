@@ -26,6 +26,7 @@ import { renderCreature } from '../render.js';
 import { WEEK, CREATURES } from '../weeks/2026-w29-deepsea-neon.js';
 import { sfx } from './sfx.js';
 import { rod } from './rod.js';
+import { coach } from './coach.js';
 
 const $ = (id) => document.getElementById(id);
 const rand = (a, b) => a + Math.random() * (b - a);
@@ -155,7 +156,13 @@ async function initCamera() {
 }
 
 // ---------- センサー（振りキャスト + 傾き） ----------
+// motionOn        = リスナーを付けた（=許可が下りた）
+// orientationLive = 傾きデータが実際に届いている
+// この2つを混同すると、リスナーは付くのにデータが来ない端末（Androidの一部）で
+// 「傾け合わせも効かない・タップ合わせも無効」になり魚が一生掛からない。実際にそうなった。
 let motionOn = false;
+let orientationLive = false;
+let orientationSeenAt = 0;
 let swingPeak = 0;
 let swingTimer = null;
 const ori = { beta: null, gamma: null };   // 現在の傾き
@@ -178,12 +185,24 @@ function onMotion(e) {
 }
 
 function onOrientation(e) {
+  if (e.beta == null && e.gamma == null) return; // 中身の無いイベントは無視
   ori.beta = e.beta;
   ori.gamma = e.gamma;
+  orientationSeenAt = performance.now();
+  if (!orientationLive) { orientationLive = true; updateSensorBtn(); coach.setTiltMode(true); }
   // 最初に持った姿勢を基準にする（以後の傾きはここからの差分）
   if (!oriBase.set && e.beta != null) {
     oriBase.beta = e.beta; oriBase.gamma = e.gamma ?? 0; oriBase.set = true;
   }
+}
+
+// センサーボタンは実状態を映す。端末の切り分け（データが来ているか）に使える
+function updateSensorBtn() {
+  const b = $('motion-btn');
+  b.classList.remove('on', 'dead'); // hidden は消さない（classNameごと上書きしないこと）
+  if (!motionOn) { b.textContent = '📳 センサー'; return; }
+  if (orientationLive) { b.textContent = '📳 センサーON'; b.classList.add('on'); }
+  else { b.textContent = '📳 センサー無効'; b.classList.add('dead'); }
 }
 
 function castBySwing(strength) {
@@ -195,13 +214,15 @@ function castBySwing(strength) {
 
 function attachSensors() {
   addEventListener('devicemotion', onMotion);
+  // 端末によっては deviceorientation が来ず deviceorientationabsolute だけ来る
   addEventListener('deviceorientation', onOrientation);
+  addEventListener('deviceorientationabsolute', onOrientation);
   motionOn = true;
-  const b = $('motion-btn');
-  b.classList.remove('hidden');
-  b.classList.add('on');
-  b.textContent = '📳 センサーON';
-  setHint('スマホを振ってキャスト！（タップでもOK）');
+  $('motion-btn').classList.remove('hidden');
+  updateSensorBtn();
+  // データが実際に届くまで live にしない。2秒来なければ「無効」と表示して切り分け可能にする
+  setTimeout(updateSensorBtn, 2000);
+  setHint(hintForIdle());
 }
 
 function initMotion() {
@@ -276,6 +297,9 @@ function toast(msg) {
   setTimeout(() => { t.style.display = 'none'; }, 1500);
 }
 function setHint(msg) { $('hint').textContent = msg; }
+const hintForIdle = () => (orientationLive
+  ? 'スマホを振ってキャスト！（タップでもOK）'
+  : '画面をタップしてキャスト');
 function setFightHint(msg) {
   const el = $('fight-hint');
   if (el.textContent !== msg) el.textContent = msg;
@@ -304,6 +328,7 @@ function cast(x, y) {
     drawLine(x, y);
     f.classList.add('landed');
     sfx.splash();
+    coach.note('cast');
     state = 'waiting';
     currentCatch = draw(); // この一投の魚を先に決める（誘いの手応えも魚で変わる）
     startLure();
@@ -357,9 +382,11 @@ function bite() {
   b.style.left = `${floatPos.x}px`; b.style.top = `${floatPos.y}px`;
   b.style.display = 'block';
   sfx.bite();
+  coach.note('bite');
   navigator.vibrate?.(200);
-  setHint(motionOn ? '今だ！ 押さえてスマホを立てろ！' : '今だ！タップ！');
-  later(() => miss('逃げられた…'), TUNE.biteWindow);
+  setHint(orientationLive ? '今だ！ 押さえてスマホを立てろ！' : '今だ！タップ！');
+  // チュートリアル中は合わせを待ってあげる（猶予を長く）
+  later(() => miss('逃げられた…'), coach.forgive() ? TUNE.biteWindow * 6 : TUNE.biteWindow);
 }
 
 // 合わせ（アワセ）: 押さえながらスマホを立てる = 竿を跳ね上げてハリを掛ける動作
@@ -367,7 +394,7 @@ function bite() {
 let hookIv = 0;
 function hookWatch() {
   clearInterval(hookIv);
-  if (!motionOn) return;
+  if (!orientationLive) return; // データが来ない端末はタップ合わせ（入力側）に任せる
   const base = ori.beta;
   hookIv = setInterval(() => {
     if (state !== 'bite') { clearInterval(hookIv); return; }
@@ -389,7 +416,7 @@ function miss(msg) {
   toast(msg);
   currentCatch = null;
   state = 'idle';
-  setHint(motionOn ? 'スマホを振ってキャスト！（タップでもOK）' : '画面をタップしてキャスト');
+  setHint(hintForIdle());
 }
 
 // ---------- 誘い（待機中） ----------
@@ -404,7 +431,7 @@ function startLure() {
   oriBase.beta = ori.beta ?? 0; oriBase.gamma = ori.gamma ?? 0; // 今の持ち方を基準にする
   lure.last = performance.now();
   document.body.classList.add('luring');
-  setHint(motionOn ? 'タップで誘え！ スマホを立てると大きく誘える' : 'タップでチョンチョン誘え！');
+  setHint(orientationLive ? 'タップで誘え！ スマホを立てると大きく誘える' : 'タップでチョンチョン誘え！');
   lure.raf = requestAnimationFrame(lureLoop);
   // rAFが止まる環境（非表示タブ・省電力WebView）でも誘いが進む保険
   lure.iv = setInterval(() => {
@@ -427,6 +454,7 @@ function doLure(kind) {
   const tooFast = now - lure.lastTwitch < TUNE.twitchCooldown;
   lure.lastTwitch = now;
   if (tooFast) { // 連打 = 悪手。警戒が増えるうえに、警戒した魚は興味を失う
+    coach.note('badLure');
     lure.wary += TUNE.waryPerTwitch;
     lure.interest = Math.max(0, lure.interest - TUNE.interestPenalty);
     lure.nibbled = 0; // 前アタリのサインもやり直し
@@ -459,7 +487,7 @@ function lureStep(now) {
   lure.last = now;
 
   // スマホを立てる動作。跨いだ瞬間だけ判定（押しっぱなしで連続発火しないように）
-  const pitchNow = motionOn && ori.beta != null && (ori.beta - oriBase.beta) >= TUNE.jerkPitch;
+  const pitchNow = orientationLive && ori.beta != null && (ori.beta - oriBase.beta) >= TUNE.jerkPitch;
   if (pitchNow && !lure.wasPitched) {
     // 押さえながら立てる = 合わせの動作。前アタリ中なら早アワセ、そうでなければ竿を煽る誘い
     if (hookHeld && isNibbling()) earlyStrike();
@@ -478,16 +506,21 @@ function lureStep(now) {
     nibble();
   }
 
+  if (lure.interest >= 40) coach.note('interest40');
   $('interest-fill').style.width = `${Math.min(100, lure.interest)}%`;
   $('wary-fill').style.width = `${Math.min(100, lure.wary)}%`;
   document.body.classList.toggle('spooked', lure.wary > 75);
   // 前アタリ中は「まだ合わせるな」を伝える。誘いは続けてよい
   if (isNibbling()) setHint('食ってる…！ まだ合わせるな、誘い続けろ');
   else if (lure.wary > 75) setHint('警戒されてる！ 少し待て');
-  else setHint(motionOn ? 'タップで誘え！ スマホを立てると大きく誘える' : 'タップでチョンチョン誘え！');
+  else setHint(orientationLive ? 'タップで誘え！ スマホを立てると大きく誘える' : 'タップでチョンチョン誘え！');
   rod.setLoad(0.05 + Math.min(1, lure.interest / 100) * 0.06); // 期待でわずかに張る
 
-  if (lure.wary >= TUNE.waryLimit) { spooked(); return 'spooked'; }
+  // チュートリアル中は「魚が散る」を握り潰す（最初の1匹には必ず辿り着かせる）
+  if (lure.wary >= TUNE.waryLimit) {
+    if (coach.forgive()) { lure.wary = 55; }
+    else { spooked(); return 'spooked'; }
+  }
   if (lure.interest >= TUNE.interestNeed) { bite(); return 'bite'; }
   return null;
 }
@@ -517,6 +550,7 @@ function startFight() {
   $('float').classList.remove('dunk');
   state = 'fight';
   document.body.classList.add('fighting');
+  coach.note('hook');
   navigator.vibrate?.([60, 40, 60]);
   fight.progress = 12;
   fight.tension = 20;
@@ -544,11 +578,13 @@ function scheduleRun() {
     fight.running = true;
     fight.runDir = Math.random() < 0.5 ? -1 : 1;
     document.body.classList.add('run', 'bite'); // bite流用で竿を震わせる
+    coach.note('run');
     navigator.vibrate?.([80, 50, 80]);
     later(() => {
       fight.running = false;
       fight.runDir = 0;
       document.body.classList.remove('run', 'bite');
+      coach.note('runEnd');
       setFightHint('長押しで巻け！');
       scheduleRun();
     }, rand(TUNE.runFor[0], TUNE.runFor[1]));
@@ -558,7 +594,7 @@ function scheduleRun() {
 // いなし判定: 傾き(逆方向へcounterTilt度) or 走りと逆側の画面を押さえている
 function isCountering() {
   if (fight.runDir === 0) return false;
-  if (motionOn && ori.gamma != null) {
+  if (orientationLive && ori.gamma != null) {
     const dGamma = ori.gamma - oriBase.gamma;
     if (dGamma * fight.runDir <= -TUNE.counterTilt) return true;
   }
@@ -571,7 +607,7 @@ function isCountering() {
 
 // 竿立て判定: スマホを起こす（ピッチ+）
 function isPumping() {
-  if (!motionOn || ori.beta == null) return false;
+  if (!orientationLive || ori.beta == null) return false;
   return (ori.beta - oriBase.beta) >= TUNE.pumpPitch;
 }
 
@@ -624,7 +660,7 @@ function fightStep(now) {
   } else if (pumping) {
     setFightHint('浮いてくる！ 倒して巻いて糸を回収！');
   } else if (fight.tension > 70) {
-    setFightHint(motionOn ? 'スマホを立てて竿を起こせ！' : '一旦離して休ませろ！');
+    setFightHint(orientationLive ? 'スマホを立てて竿を起こせ！' : '一旦離して休ませろ！');
   }
 
   // 手触りパルス（音+振動を状態ごとのリズムで刻む）。iOSは音が主役(vibrate非対応)
@@ -663,8 +699,14 @@ function fightStep(now) {
   rod.setLoad(0.18 + (fight.tension / 100) * 0.82); // テンションで竿がしなる
   if (fight.running && !countered) rod.twitch(0.25); // 走られると竿が叩かれる
 
-  if (fight.tension >= 100) { snap(); return 'snap'; }
-  if (fight.slack >= TUNE.slackLimit) { throwHook(); return 'slack'; } // 糸を緩めすぎ=ハリが外れる
+  if (fight.tension >= 100) {
+    if (coach.forgive()) fight.tension = 70; // チュートリアル中は糸が切れない
+    else { snap(); return 'snap'; }
+  }
+  if (fight.slack >= TUNE.slackLimit) {
+    if (coach.forgive()) fight.slack = 60; // チュートリアル中はハリが外れない
+    else { throwHook(); return 'slack'; }
+  }
   if (fight.progress >= 100) { land(); return 'land'; }
   return null;
 }
@@ -717,6 +759,7 @@ function land() {
   ripple(floatPos.x, floatPos.y);
   sfx.land();
   navigator.vibrate?.([60, 40, 120]);
+  coach.note('land');
   const isNew = record(currentCatch);
   showResult(currentCatch, isNew);
 }
@@ -803,7 +846,8 @@ document.body.addEventListener('pointerdown', (e) => {
     doLure('twitch');
   } else if (state === 'bite') {
     hookHeld = true;
-    if (!motionOn) startFight(); // センサー無し端末はタップだけで合わせられる
+    // 傾きデータが来ない端末はタップだけで合わせられる（フォールバック）
+    if (!orientationLive) startFight();
   } else if (state === 'fight') {
     fight.holding = true;
   }
@@ -827,7 +871,7 @@ function rodLoop(now) {
   const dt = Math.min(0.05, (now - rodLast) / 1000);
   rodLast = now;
   // スマホの傾きに竿を追従させる（スマホ＝竿）
-  if (motionOn && ori.beta != null) {
+  if (orientationLive && ori.beta != null) {
     const dG = (ori.gamma ?? 0) - oriBase.gamma;
     const dB = ori.beta - oriBase.beta;
     // 右に傾ける→穂先が右へ / スマホを立てる→穂先が起き上がる（どちらも時計回り）
@@ -840,11 +884,27 @@ function rodLoop(now) {
 }
 requestAnimationFrame(rodLoop);
 
+// ---------- チュートリアル ----------
+function startTutorial() {
+  $('intro-modal').classList.remove('show');
+  sfx.init();
+  miss(null);              // 状態を初期化してから始める
+  coach.start(orientationLive);
+}
+$('intro-start').addEventListener('click', (e) => { e.stopPropagation(); startTutorial(); });
+$('intro-skip').addEventListener('click', (e) => {
+  e.stopPropagation();
+  localStorage.setItem('dokodemo.tutorial.done.v1', '1');
+  $('intro-modal').classList.remove('show');
+});
+$('help-btn').addEventListener('click', (e) => { e.stopPropagation(); startTutorial(); });
+
 // ---------- 起動 ----------
 renderPlaces();
 updateZukanCount();
 initCamera();
 initMotion();
+if (!coach.seen()) $('intro-modal').classList.add('show');
 
 // ?debug=1 でテスト用フック（非表示タブでは rAF/タイマーが動かないため状態機械を直接進める）
 if (new URLSearchParams(location.search).has('debug')) {
