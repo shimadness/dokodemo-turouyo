@@ -23,7 +23,7 @@
 //   スマホを立てる      = 竿を立てて魚を浮かせる（寄る。ただし糸を巻かないと緩む）
 //   スマホを倒しながら巻く = ポンピングの巻き取り局面（緩みを回収）
 import { renderCreature } from '../render.js';
-import { WEEK, CREATURES } from '../weeks/2026-w29-deepsea-neon.js';
+import { WEEK, CREATURES } from '../weeks/2026-w30-natsumatsuri.js';
 import { sfx } from './sfx.js';
 import { rod } from './rod.js';
 import { coach } from './coach.js';

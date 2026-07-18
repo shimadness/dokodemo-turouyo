@@ -1,7 +1,7 @@
 import { renderCreature } from './render.js';
 import { SAMPLES, randomSpec } from './samples.js';
 import { HABITAT_LABELS } from './parts.js';
-import { WEEK, CREATURES } from './weeks/2026-w29-deepsea-neon.js';
+import { WEEK, CREATURES } from './weeks/2026-w30-natsumatsuri.js';
 
 const RARITY_CLASS = { 1: 'r1', 2: 'r2', 3: 'r3', 4: 'r4', 5: 'r5' };
 
