@@ -54,6 +54,14 @@ export const sfx = {
   splash() { noise(0.22, 0.22, 480, 0.8); tone(150, 0.16, 'sine', 0.1, 55); },
   nibble() { tone(340, 0.06, 'sine', 0.14); },
   bite() { tone(210, 0.09, 'square', 0.18); setTimeout(() => tone(150, 0.13, 'square', 0.18), 90); },
+  // レア度で本アタリの重さを変える。★の数は出さず「音の低さ＝でかさ」だけで伝える
+  nibbleBig(big) { tone(big === 2 ? 185 : 250, 0.1, 'sine', 0.17); },     // 最後の前アタリが太い＝リーチ
+  biteBig() { tone(170, 0.11, 'square', 0.2); setTimeout(() => tone(115, 0.16, 'square', 0.2), 95); },
+  biteHuge() {                                                            // ゴンッ！
+    tone(120, 0.16, 'square', 0.22, 62); noise(0.2, 0.16, 220, 1.1);
+    setTimeout(() => tone(78, 0.28, 'square', 0.2), 120);
+  },
+  surge() { noise(0.7, 0.24, 780, 2.4); tone(96, 0.5, 'sawtooth', 0.12, 60); }, // 最初の突っ込みの唸り
   reelTick() { tone(1250, 0.018, 'square', 0.04); },              // カリ…カリ…(巻き)
   dragHard() { noise(0.09, 0.22, 950, 2.2); },                    // ジーッ！(走られてる・危険)
   dragSoft() { noise(0.1, 0.06, 480, 2.2); },                     // ジ…(いなして制御下)

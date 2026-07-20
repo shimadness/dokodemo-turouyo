@@ -66,6 +66,16 @@ const TUNE = {
   progressDecayRun: 8,
   runEvery: [1300, 3200],
   runFor: [650, 1400],
+  // --- レア度（★が上がると「数字」でなく「戦い方」が変わる） ---
+  // 難易度は元々 stats.power だけで決まっていた。それでも★1→★5で概ね強くはなるが、
+  // ★3のヌシ(power81)が★4(power74)より強いといった逆転が3%あり、星の数と手強さが一致しない。
+  // この係数を power の上に掛けて逆転を潰し、さらに「走りの回数」「竿の曲がり」まで変える。
+  rarityTension: [1, 1.08, 1.2, 1.34, 1.5], // テンション上昇の倍率（★1はそのまま）
+  rarityRunGap: [1.7, 1.3, 1, 0.85, 0.72],  // 走りの間隔の倍率（小さいほど何度も走る）
+  rarityBend: [1, 1.04, 1.12, 1.22, 1.34],  // 同じテンションでも大物ほど竿が曲がる（見て分かる）
+  surgeFrom: 5,           // このレア度以上は掛かった直後に「最初の突っ込み」が確定で入る
+  surgeDelay: 420,        // 合わせてから突っ込みが始まるまで(ms)
+  surgeFor: [2000, 2800], // 突っ込みの長さ(ms)。この間は何をしても寄らない＝耐えるしかない時間
   // --- センサー ---
   // --- 魚影（キャストの狙い） ---
   castRadius: 120,        // 着水点からこの距離(px)に魚影がいないと食わない
@@ -201,7 +211,14 @@ function onOrientation(e) {
   ori.beta = e.beta;
   ori.gamma = e.gamma;
   orientationSeenAt = performance.now();
-  if (!orientationLive) { orientationLive = true; updateSensorBtn(); coach.setTiltMode(true); }
+  if (!orientationLive) {
+    orientationLive = true;
+    updateSensorBtn();
+    coach.setTiltMode(true);
+    // 許可の直後は「まだデータが来ていない」状態でヒントを書いてしまっているので出し直す。
+    // これが無いと、傾きが使えるのに「画面をタップしてキャスト」と案内し続けてしまう
+    if (state === 'idle') setHint(hintForIdle());
+  }
   // 最初に持った姿勢を基準にする（以後の傾きはここからの差分）
   if (!oriBase.set && e.beta != null) {
     oriBase.beta = e.beta; oriBase.gamma = e.gamma ?? 0; oriBase.set = true;
@@ -331,7 +348,7 @@ function cast(x, y) {
   rod.twitch(1.4); // 振り抜き
   const f = $('float');
   const t = rodTip();
-  f.classList.remove('landed', 'dunk', 'nibble');
+  f.classList.remove('landed', 'dunk', 'nibble', 'big', 'heavy');
   f.style.transition = 'none';
   f.style.left = `${t.x}px`; f.style.top = `${t.y}px`;
   f.style.opacity = '1';
@@ -367,19 +384,41 @@ function cast(x, y) {
   }, TUNE.castMs);
 }
 
-function nibble() {
+// レア度を「大物感」に翻訳する。0=小物 / 1=大物 / 2=超大物
+// ★の数と正体は釣果カードまで伏せるのが設計。掛かっている間にプレイヤーへ伝わるのは
+// 「なんかヤバいのが掛かった」という手応えだけで、それが最後まで期待を引っぱる。
+// （星まで出すと★1が掛かった瞬間にやる気が落ちる。逆に全く伝えないと絶叫が生まれない）
+const bigness = (c = currentCatch) => (!c ? 0 : c.rarity >= 5 ? 2 : c.rarity >= 3 ? 1 : 0);
+
+function shake(ms) {
+  document.body.classList.add('shake');
+  setTimeout(() => document.body.classList.remove('shake'), ms);
+}
+
+// last = 最後の前アタリ（興味90を跨いだ＝もう来る）。ここだけ大物は明確に重くする＝リーチ
+function nibble(last = false) {
   if (state !== 'waiting') return;
+  const big = bigness();
+  const heavy = last && big > 0;
   const f = $('float');
-  f.classList.remove('nibble');
+  f.classList.remove('nibble', 'heavy');
   void f.offsetWidth; // アニメ再始動
   f.classList.add('nibble');
+  if (heavy) f.classList.add('heavy');
   // クラスを外し忘れると「前アタリ中」が永久に続いてしまう（実際にバグった）
   clearTimeout(lure.nibbleTimer);
-  lure.nibbleTimer = setTimeout(() => f.classList.remove('nibble'), TUNE.nibbleMs);
+  lure.nibbleTimer = setTimeout(() => f.classList.remove('nibble', 'heavy'), TUNE.nibbleMs);
   lure.nibbleUntil = performance.now() + TUNE.nibbleMs; // 判定はCSSでなく時間で持つ
   ripple(floatPos.x, floatPos.y);
-  sfx.nibble();
-  navigator.vibrate?.(40);
+  if (heavy) {
+    ripple(floatPos.x + rand(-14, 14), floatPos.y + rand(-8, 8)); // 波紋が二重＝でかい
+    sfx.nibbleBig(big);
+    rod.twitch(0.5 + big * 0.35);
+    navigator.vibrate?.(big === 2 ? 90 : 60);
+  } else {
+    sfx.nibble();
+    navigator.vibrate?.(40);
+  }
 }
 
 const isNibbling = () => performance.now() < (lure.nibbleUntil || 0);
@@ -407,15 +446,24 @@ function bite() {
   state = 'bite';
   hookWatch();
   document.body.classList.add('bite');
+  const big = bigness();
   const f = $('float');
-  f.classList.remove('landed', 'nibble');
+  f.classList.remove('landed', 'nibble', 'heavy');
   f.classList.add('dunk');
+  f.classList.toggle('big', big > 0);   // 大物ほどウキが深く突き刺さる
   const b = $('bite-mark');
   b.style.left = `${floatPos.x}px`; b.style.top = `${floatPos.y}px`;
   b.style.display = 'block';
-  sfx.bite();
+  b.textContent = big === 2 ? '‼' : '❗';
   coach.note('bite');
-  navigator.vibrate?.(200);
+  // 音・振動・竿の曲がりで「大物感」だけを伝える（正体は釣果カードまで伏せる）
+  if (big === 2) {
+    sfx.biteHuge(); navigator.vibrate?.([200, 80, 300]); rod.twitch(1.8); shake(420);
+  } else if (big === 1) {
+    sfx.biteBig(); navigator.vibrate?.([120, 60, 160]); rod.twitch(1.3);
+  } else {
+    sfx.bite(); navigator.vibrate?.(200);
+  }
   setHint(orientationLive ? '今だ！ 押さえてスマホを立てろ！' : '今だ！タップ！');
   // チュートリアル中は合わせを待ってあげる（猶予を長く）
   later(() => { shadowFlee(); miss('逃げられた…'); }, coach.forgive() ? TUNE.biteWindow * 6 : TUNE.biteWindow);
@@ -442,7 +490,7 @@ function miss(msg) {
   document.body.classList.remove('bite', 'casting');
   $('bite-mark').style.display = 'none';
   $('float').style.opacity = '0';
-  $('float').classList.remove('landed', 'dunk', 'nibble');
+  $('float').classList.remove('landed', 'dunk', 'nibble', 'big', 'heavy');
   clearLine();
   rod.setLoad(0);
   toast(msg);
@@ -628,7 +676,7 @@ function lureStep(now) {
   const marks = TUNE.nibbleAt;
   if (lure.nibbled < marks.length && lure.interest >= marks[lure.nibbled]) {
     lure.nibbled++;
-    nibble();
+    nibble(lure.nibbled === marks.length); // 3回目＝最後のサイン。ここで大物感を出す
   }
 
   if (lure.interest >= 40) coach.note('interest40');
@@ -673,7 +721,7 @@ function startFight() {
   stopLure();
   document.body.classList.remove('bite');
   $('bite-mark').style.display = 'none';
-  $('float').classList.remove('dunk');
+  $('float').classList.remove('dunk', 'big');
   state = 'fight';
   document.body.classList.add('fighting');
   coach.note('hook');
@@ -683,12 +731,15 @@ function startFight() {
   fight.slack = 0;
   fight.holding = false;
   fight.running = false;
+  fight.surging = false;
   fight.runDir = 0;
   fight.last = performance.now();
   // ファイト開始時の持ち方を「ニュートラル」とする
   if (ori.beta != null) { oriBase.beta = ori.beta; oriBase.gamma = ori.gamma; }
   setFightHint('長押しで巻け！');
-  scheduleRun();
+  // チュートリアル中は突っ込ませない（最初の1匹には必ず辿り着かせる方針）
+  if (currentCatch.rarity >= TUNE.surgeFrom && !coach.forgive()) surge();
+  else scheduleRun();
   fight.raf = requestAnimationFrame(fightLoop);
   // rAFが止まる環境（非表示タブ・省電力WebView）でも進む保険
   fight.iv = setInterval(() => {
@@ -699,6 +750,7 @@ function startFight() {
 function scheduleRun() {
   if (state !== 'fight') return;
   const laziness = 1 + Math.max(0, (60 - currentCatch.stats.power)) / 40; // 弱い魚ほど走らない(★1はほぼ棒立ち)
+  const gap = TUNE.rarityRunGap[currentCatch.rarity - 1] ?? 1;            // ★が上がるほど何度も走る
   later(() => {
     if (state !== 'fight') return;
     fight.running = true;
@@ -714,7 +766,31 @@ function scheduleRun() {
       setFightHint('長押しで巻け！');
       scheduleRun();
     }, rand(TUNE.runFor[0], TUNE.runFor[1]));
-  }, rand(TUNE.runEvery[0], TUNE.runEvery[1]) * laziness);
+  }, rand(TUNE.runEvery[0], TUNE.runEvery[1]) * laziness * gap);
+}
+
+// 最初の突っ込み（★5のみ）。掛けた直後、いなしても巻いても寄らない数秒間。
+// 実釣で一番興奮する瞬間で、耐え切れた時に初めて「獲れるかも」が立ち上がる。
+// ★1-2は走りが短くタップだけで獲れ、★3-4はいなしと休ませが要る。ここが戦い方の分岐点。
+function surge() {
+  later(() => {
+    if (state !== 'fight') return;
+    fight.surging = true;
+    fight.running = true;
+    fight.runDir = Math.random() < 0.5 ? -1 : 1;
+    document.body.classList.add('run', 'bite', 'surge');
+    sfx.surge();
+    navigator.vibrate?.([140, 60, 140, 60, 200]);
+    rod.twitch(1.6);
+    later(() => {
+      fight.surging = false;
+      fight.running = false;
+      fight.runDir = 0;
+      document.body.classList.remove('run', 'bite', 'surge');
+      setFightHint('こらえた！ 今だ、巻け！');
+      scheduleRun();
+    }, rand(TUNE.surgeFor[0], TUNE.surgeFor[1]));
+  }, TUNE.surgeDelay);
 }
 
 // いなし判定: 傾き(逆方向へcounterTilt度) or 走りと逆側の画面を押さえている
@@ -746,14 +822,16 @@ function fightStep(now) {
   const power = currentCatch.stats.power;
   const countered = fight.running && isCountering();
   const pumping = isPumping();
-  const tensionHold = TUNE.tensionHoldBase + TUNE.tensionHoldPer * power;
-  const tensionRun = TUNE.tensionRunBase + TUNE.tensionRunPer * power;
+  const rmul = TUNE.rarityTension[currentCatch.rarity - 1] ?? 1; // ★の数と手強さを一致させる
+  const tensionHold = (TUNE.tensionHoldBase + TUNE.tensionHoldPer * power) * rmul;
+  const tensionRun = (TUNE.tensionRunBase + TUNE.tensionRunPer * power) * rmul;
   const reel = TUNE.reelRate * (1 - power / 170);
 
   if (fight.holding) {
     if (fight.running) {
-      // ドラグが出ている間に巻くのは実釣でも悪手（糸ヨレ・高切れ）。いなせば巻ける
-      fight.progress += (countered ? TUNE.reelRateCounter : TUNE.reelRateRun) * dt;
+      // ドラグが出ている間に巻くのは実釣でも悪手（糸ヨレ・高切れ）。いなせば巻ける。
+      // ただし最初の突っ込みだけは、いなしても寄らない＝耐えるしかない
+      fight.progress += (fight.surging ? 0 : countered ? TUNE.reelRateCounter : TUNE.reelRateRun) * dt;
       fight.tension += (countered ? TUNE.tensionCounter : tensionRun) * dt;
     } else {
       fight.progress += reel * dt;
@@ -780,6 +858,8 @@ function fightStep(now) {
   // ヒント（状況で切り替え）
   if (fight.slack > 55) {
     setFightHint('糸がたるんでる！竿を倒して巻け！'); // 最優先。緩むとハリが外れる
+  } else if (fight.surging) {
+    setFightHint('突っ込まれてる！ 離して耐えろ！'); // 巻いてもいなしても寄らない
   } else if (fight.running) {
     if (countered) setFightHint('いなしてる！巻け巻け！');
     else setFightHint(fight.runDir > 0 ? '➡ 右に走ってる！左へいなせ！' : '⬅ 左に走ってる！右へいなせ！');
@@ -822,7 +902,8 @@ function fightStep(now) {
   $('tension-fill').style.width = `${Math.min(100, fight.tension)}%`;
   $('slack-fill').style.width = `${Math.min(100, fight.slack)}%`;
   document.body.classList.toggle('slacking', fight.slack > 55);
-  rod.setLoad(0.18 + (fight.tension / 100) * 0.82); // テンションで竿がしなる
+  // テンションで竿がしなる。同じテンションでも大物ほど深く曲がる＝手応えが目で分かる
+  rod.setLoad((0.18 + (fight.tension / 100) * 0.82) * (TUNE.rarityBend[currentCatch.rarity - 1] ?? 1));
   if (fight.running && !countered) rod.twitch(0.25); // 走られると竿が叩かれる
 
   if (fight.tension >= 100) {
@@ -1060,6 +1141,22 @@ if (new URLSearchParams(location.search).has('debug')) {
     activeShadow: () => activeShadow,
     zukanStore: zukan, recordSeen, renderCreature,
     setHookHeld: (v) => { hookHeld = v; },
+    // 前アタリ／本アタリの演出を指定の魚で確認する（レア度ごとの出し分けの検証用）
+    forceNibble: (name, last = true) => {
+      currentCatch = CREATURES.find((c) => c.name === name) ?? CREATURES[0];
+      landPos = { x: innerWidth / 2, y: innerHeight / 2 };
+      moveFloat(landPos.x, landPos.y);
+      $('float').classList.remove('dunk', 'big', 'nibble', 'heavy'); // 前の一投を持ち越さない
+      state = 'waiting';
+      nibble(last);
+    },
+    forceBite: (name) => {
+      currentCatch = CREATURES.find((c) => c.name === name) ?? CREATURES[0];
+      landPos = { x: innerWidth / 2, y: innerHeight / 2 };
+      moveFloat(landPos.x, landPos.y);
+      state = 'waiting';
+      bite();
+    },
     forceFight: (name) => { // タイマーを介さず直接ファイトに入る
       currentCatch = CREATURES.find((c) => c.name === name) ?? CREATURES[0];
       landPos = { x: innerWidth / 2, y: innerHeight / 2 };

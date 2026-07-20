@@ -153,9 +153,22 @@
   }
   body.run #fight-hint { color: #ff8a8a; font-weight: bold; }
 
-  /* 前アタリ: 小さくピクッ */
+  /* 前アタリ: 小さくピクッ。最後の1回だけ、大物は深く重く沈む＝リーチ */
   #float.nibble { animation: nib .3s 2; }
   @keyframes nib { 50% { transform: translateY(7px); } }
+  #float.nibble.heavy { animation: nibheavy .42s 2; }
+  @keyframes nibheavy { 50% { transform: translateY(16px) scale(.94); } }
+
+  /* 本アタリ: 大物ほどウキが深く突き刺さる */
+  #float.dunk.big { animation: dunkbig .38s ease-in infinite alternate; }
+  @keyframes dunkbig { from { transform: translateY(8px); } to { transform: translateY(26px) scale(.92); } }
+
+  /* 超大物が食った瞬間の画面の揺れ（★5のみ。フィルタ不使用）。
+     竿とウキは各々のアニメを持っているので、揺らすのは背景レイヤーだけにする（transform衝突回避） */
+  body.shake #cam, body.shake #fallback-bg, body.shake #shadows { animation: shk .09s 5; }
+  @keyframes shk { 25% { transform: translate(3px, -2px); } 75% { transform: translate(-3px, 2px); } }
+
+  body.surge #fight-hint { color: #ffb84d; font-weight: bold; }
 
   /* 振りキャストチップ */
   #motion-btn {
@@ -179,6 +192,16 @@
   body.danger #vignette { opacity: 1; animation: dangerpulse .7s ease-in-out infinite; }
   @keyframes dangerpulse { 50% { opacity: .55; } }
   body.danger .ftrack { border-color: #a03040; }
+
+  /* 最初の突っ込み中(★5): 耐える時間だと分かるように画面のふちがオレンジに唸る。
+     テンションも同時に高くなるので danger と必ず重なる。「離して耐えろ」という
+     やることが決まっている局面なので、汎用の赤(danger)より突っ込み側を優先する。
+     ※ danger の後に置き、かつ .danger 併用時も勝つよう明示（順番任せにしない） */
+  body.surge #vignette, body.surge.danger #vignette {
+    opacity: 1; animation: surgepulse .32s ease-in-out infinite;
+    background: radial-gradient(ellipse at center, transparent 46%, rgba(255,150,40,.42));
+  }
+  @keyframes surgepulse { 50% { opacity: .5; } }
 
   /* ポンピング中: テンションバーが青系に変わる=抜けている合図 */
   body.pumping #tension-fill { background: linear-gradient(90deg, #3ddb84, #3dc8ff); }
